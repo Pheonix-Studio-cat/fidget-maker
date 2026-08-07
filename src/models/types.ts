@@ -45,6 +45,12 @@ export interface Part {
   /** Vorschaufarbe im Viewer. */
   color: string;
   note?: string;
+  /**
+   * Teile mit derselben Gruppe behalten ihre Lage zueinander und werden
+   * gemeinsam angeordnet - noetig bei allem, was an Ort und Stelle gedruckt
+   * wird, etwa Schiene und Wagen des Sliders.
+   */
+  group?: string;
 }
 
 /** Zeile der Stueckliste - alles, was nicht gedruckt, sondern gekauft wird. */

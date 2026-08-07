@@ -225,6 +225,7 @@ function build(p: Params): BuildResult {
         copies: 1,
         materialId: 'pla',
         color: str(p, 'colorRail', '#3a3f4b'),
+        group: 'Slider',
         note: 'Flach drucken. Der Wagen ist ein eigenes Teil in derselben Datei und wird mitgedruckt.',
       },
       {
@@ -234,6 +235,7 @@ function build(p: Params): BuildResult {
         copies: 1,
         materialId: 'pla',
         color: str(p, 'colorCarriage', '#e8a33d'),
+        group: 'Slider',
         note: 'Liegt bereits an seinem Platz in der Schiene - nicht separat anordnen.',
       },
     ],
