@@ -135,7 +135,7 @@ const defaults: Params = {
   armRadius: 13,
   waist: 8,
   blend: 7,
-  thickness: 7.2,
+  thickness: 7.8,
   chamfer: 0.8,
   bearing: '608',
   bearingFit: -0.1,
@@ -196,8 +196,17 @@ function build(p: Params): BuildResult {
   const fit = num(p, 'bearingFit', -0.1);
   const mat = materialById(str(p, 'material', 'pla'));
 
-  // Nabe: gerade so gross, dass um das Lager genug Material bleibt.
-  const hubRadius = bearing.outer / 2 + 2.6;
+  const deco = str(p, 'decoration', 'keine');
+  const decoSize = num(p, 'decorationSize', 5);
+  const wantsRing = deco === 'ring' || deco === 'beides';
+
+  // Nabe: gerade so gross, dass um das Lager genug Material bleibt. Soll ein
+  // Lochkranz hinein, waechst sie so weit, dass innen wie aussen 0.8 bzw.
+  // 1.4 mm Steg stehen bleiben - sonst gaebe es die Zierloecher nie.
+  const hubRadius = Math.max(
+    bearing.outer / 2 + 2.6,
+    wantsRing ? bearing.outer / 2 + decoSize + 2.2 : 0,
+  );
 
   const shapes: Sdf[] = [sdCircle(0, 0, hubRadius)];
   const armCenters: [number, number][] = [];
@@ -277,18 +286,20 @@ function build(p: Params): BuildResult {
     }
   }
 
-  const deco = str(p, 'decoration', 'keine');
-  const decoSize = num(p, 'decorationSize', 5);
-  if (deco === 'ring' || deco === 'beides') {
+  if (wantsRing) {
     const ringR = hubRadius - decoSize / 2 - 1.4;
     const n = Math.max(4, Math.floor((Math.PI * 2 * ringR) / (decoSize + 2)));
-    if (ringR > bearing.outer / 2 + decoSize / 2 + 0.8) {
+    // Die Nabe ist oben schon passend gewachsen; eng wird es nur, wenn die
+    // Arme so kurz sind, dass die Nabe sie verschlucken wuerde.
+    if (hubRadius > armLength - 1) {
+      warnings.push(
+        `Fuer den Lochkranz muesste die Nabe ${hubRadius.toFixed(1)} mm gross werden - dafuer sind die Arme zu kurz. Armlaenge erhoehen oder Zierlochgroesse verringern.`,
+      );
+    } else {
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2;
         through.push(movePoly(circle(decoSize / 2, 24), Math.cos(a) * ringR, Math.sin(a) * ringR));
       }
-    } else {
-      warnings.push('Fuer den Lochkranz ist zwischen Lager und Nabenrand zu wenig Platz.');
     }
   }
   if ((deco === 'arme' || deco === 'beides') && weightMode === 'keine') {
