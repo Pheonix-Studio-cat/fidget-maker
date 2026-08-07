@@ -295,6 +295,61 @@ export function scalePoly(poly: Poly, sx: number, sy = sx): Poly {
   return poly.map(([x, y]) => [x * sx, y * sy] as Vec2);
 }
 
+/**
+ * Verteilt `n` Punkte gleichmaessig nach Bogenlaenge auf einem geschlossenen
+ * Linienzug. Damit lassen sich zwei verschieden fein aufgeloeste Umrisse -
+ * etwa eine Kontur und ihr Innenversatz - miteinander verbinden.
+ */
+export function resampleClosed(poly: Poly, n: number): Poly {
+  if (poly.length < 3 || n < 3) return poly;
+  const m = poly.length;
+  const lengths: number[] = new Array(m);
+  let total = 0;
+  for (let i = 0; i < m; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % m];
+    lengths[i] = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    total += lengths[i];
+  }
+  if (total <= 0) return poly;
+
+  const out: Poly = [];
+  let seg = 0;
+  let acc = 0;
+  for (let k = 0; k < n; k++) {
+    const target = (k / n) * total;
+    while (seg < m - 1 && acc + lengths[seg] < target) {
+      acc += lengths[seg];
+      seg++;
+    }
+    const t = lengths[seg] > 0 ? (target - acc) / lengths[seg] : 0;
+    const a = poly[seg];
+    const b = poly[(seg + 1) % m];
+    out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+  }
+  return out;
+}
+
+/**
+ * Dreht die Punktliste so, dass sie beim Punkt mit dem kleinsten Winkel zum
+ * Ursprung beginnt. Zwei so ausgerichtete Ringe lassen sich ohne Verdrehung
+ * miteinander verbinden.
+ */
+export function alignStart(poly: Poly): Poly {
+  if (poly.length < 3) return poly;
+  let best = 0;
+  let bestAngle = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    let a = Math.atan2(poly[i][1], poly[i][0]);
+    if (a < 0) a += Math.PI * 2;
+    if (a < bestAngle) {
+      bestAngle = a;
+      best = i;
+    }
+  }
+  return [...poly.slice(best), ...poly.slice(0, best)];
+}
+
 /** Fuegt Punkte ein, bis keine Kante laenger als `maxLen` ist. */
 export function resample(poly: Poly, maxLen: number): Poly {
   const out: Poly = [];

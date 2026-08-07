@@ -6,7 +6,15 @@
 import { capMesh, extrudeRegion, loftPolys, trianglesToCap, wallMesh } from '../geo/extrude.ts';
 import { triangulateFaces } from '../geo/robust.ts';
 import { Mesh, type Vec2 } from '../geo/mesh.ts';
-import { circle, ensureCCW, ensureCW, type Poly, type Region } from '../geo/shapes2d.ts';
+import {
+  alignStart,
+  circle,
+  ensureCCW,
+  ensureCW,
+  resampleClosed,
+  type Poly,
+  type Region,
+} from '../geo/shapes2d.ts';
 
 export interface Pocket {
   poly: Poly;
@@ -65,6 +73,89 @@ export function plateWithPockets(
     m.add(capMesh({ outline: ensureCCW(poly), holes: [] }, floor, true));
   });
   bottom.forEach((p, k) => {
+    const poly = checked.holes[idxBottom[k]];
+    const ceil = Math.min(z1 - 0.01, z0 + p.depth);
+    m.add(wallMesh(poly, z0, ceil));
+    m.add(capMesh({ outline: ensureCCW(poly), holes: [] }, ceil, false));
+  });
+  return m;
+}
+
+export interface ChamferedPlateOptions {
+  chamferTop?: number;
+  chamferBottom?: number;
+  pockets?: Pocket[];
+  through?: Poly[];
+}
+
+/**
+ * Platte mit gebrochenen Aussenkanten, Sacktaschen und Durchbruechen.
+ *
+ * Die verkleinerten Umrisse fuer die Fasen kommen von `inset` - beim
+ * Spinner also aus dem Abstandsfeld, damit die Hohlkehlen zwischen den Armen
+ * nicht ueberlaufen. Weil ein solcher Innenversatz eine andere Punktzahl
+ * hat als der Umriss, werden beide vor dem Verbinden auf dieselbe Anzahl
+ * nachgetastet.
+ */
+export function chamferedPlate(
+  outline: Poly,
+  inset: (delta: number) => Poly | null,
+  z0: number,
+  z1: number,
+  opts: ChamferedPlateOptions = {},
+): Mesh {
+  const cb = Math.max(0, opts.chamferBottom ?? 0);
+  const ct = Math.max(0, opts.chamferTop ?? 0);
+  const pockets = opts.pockets ?? [];
+  const through = opts.through ?? [];
+
+  if (cb + ct >= z1 - z0 - 0.1 || (cb === 0 && ct === 0)) {
+    return plateWithPockets(outline, z0, z1, pockets, through);
+  }
+
+  const ring = alignStart(ensureCCW(outline));
+  const n = ring.length;
+  const shrink = (delta: number): Poly | null => {
+    const r = inset(delta);
+    return r ? alignStart(resampleClosed(ensureCCW(r), n)) : null;
+  };
+  const bot = cb > 0 ? shrink(cb) : ring;
+  const top = ct > 0 ? shrink(ct) : ring;
+  if (!bot || !top) return plateWithPockets(outline, z0, z1, pockets, through);
+
+  const passages = through.filter((h) => h.length >= 3).map(ensureCW);
+  const topPockets = pockets.filter((p) => p.from === 'top' && p.poly.length >= 3);
+  const botPockets = pockets.filter((p) => p.from === 'bottom' && p.poly.length >= 3);
+
+  const holes: Poly[] = [
+    ...passages,
+    ...topPockets.map((p) => ensureCW(p.poly)),
+    ...botPockets.map((p) => ensureCW(p.poly)),
+  ];
+  const idxPassages = passages.map((_, i) => i);
+  const idxTop = topPockets.map((_, i) => passages.length + i);
+  const idxBottom = botPockets.map((_, i) => passages.length + topPockets.length + i);
+
+  const checked = triangulateFaces(holes, [
+    { outline: top, holeIndices: [...idxPassages, ...idxTop] },
+    { outline: bot, holeIndices: [...idxPassages, ...idxBottom] },
+  ]);
+
+  const m = new Mesh();
+  m.add(trianglesToCap(checked.tris[0], z1, true));
+  m.add(trianglesToCap(checked.tris[1], z0, false));
+  m.add(loftPolys(bot, z0, ring, z0 + cb));
+  m.add(loftPolys(ring, z0 + cb, ring, z1 - ct));
+  m.add(loftPolys(ring, z1 - ct, top, z1));
+
+  for (const i of idxPassages) m.add(wallMesh(checked.holes[i], z0, z1));
+  topPockets.forEach((p, k) => {
+    const poly = checked.holes[idxTop[k]];
+    const floor = Math.max(z0 + 0.01, z1 - p.depth);
+    m.add(wallMesh(poly, floor, z1));
+    m.add(capMesh({ outline: ensureCCW(poly), holes: [] }, floor, true));
+  });
+  botPockets.forEach((p, k) => {
     const poly = checked.holes[idxBottom[k]];
     const ceil = Math.min(z1 - 0.01, z0 + p.depth);
     m.add(wallMesh(poly, z0, ceil));
