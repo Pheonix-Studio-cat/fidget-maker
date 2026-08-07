@@ -1,0 +1,22 @@
+{
+  "name": "fidget-maker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Parametrischer Fidget-Generator: Pop-It, Clicker, Stressball, Magnet-Slider und Fidget-Spinner - druckfertig als STL/3MF fuer Bambu Studio.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.1.7"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "three": "^0.180.0"
+  }
+}
