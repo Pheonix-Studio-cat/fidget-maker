@@ -9,6 +9,7 @@
  * Konvention: negativ = innen.
  */
 
+import { EdgeIndex } from './edgeindex.ts';
 import type { Vec2 } from './mesh.ts';
 import type { Poly, Region } from './shapes2d.ts';
 
@@ -147,6 +148,41 @@ export interface ContourOptions {
   smooth?: number;
 }
 
+/** Abgetastetes Feld - einmal berechnet, beliebig oft geschnitten. */
+export interface SampledField {
+  data: Float64Array;
+  nx: number;
+  ny: number;
+  x0: number;
+  y0: number;
+  cell: number;
+}
+
+/**
+ * Tastet eine SDF auf einem Gitter ab. Wer mehrere Hoehenlinien derselben
+ * Funktion braucht - etwa Rahmen, Schnapplippe und Membranrand aus einem
+ * Umriss - tastet einmal ab und schneidet dann mehrfach.
+ */
+export function sampleField(
+  f: Sdf,
+  halfWidth: number,
+  halfHeight: number,
+  cell: number,
+  padding = cell * 2,
+): SampledField {
+  const x0 = -halfWidth - padding;
+  const y0 = -halfHeight - padding;
+  const nx = Math.ceil((halfWidth + padding) * 2 / cell) + 1;
+  const ny = Math.ceil((halfHeight + padding) * 2 / cell) + 1;
+  const data = new Float64Array(nx * ny);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      data[j * nx + i] = f(x0 + i * cell, y0 + j * cell);
+    }
+  }
+  return { data, nx, ny, x0, y0, cell };
+}
+
 /**
  * Zieht alle geschlossenen Nulllinien einer SDF im Bereich
  * [-halfWidth, halfWidth] x [-halfHeight, halfHeight] heraus.
@@ -159,21 +195,19 @@ export function contour(
   opts: ContourOptions = {},
 ): Poly[] {
   const cell = opts.cell ?? 0.4;
-  const pad = opts.padding ?? cell * 2;
-  const x0 = -halfWidth - pad;
-  const y0 = -halfHeight - pad;
-  const nx = Math.ceil((halfWidth + pad) * 2 / cell) + 1;
-  const ny = Math.ceil((halfHeight + pad) * 2 / cell) + 1;
+  const field = sampleField(f, halfWidth, halfHeight, cell, opts.padding ?? cell * 2);
+  return contourField(field, 0, opts);
+}
 
-  const grid = new Float64Array(nx * ny);
-  for (let j = 0; j < ny; j++) {
-    for (let i = 0; i < nx; i++) {
-      grid[j * nx + i] = f(x0 + i * cell, y0 + j * cell);
-    }
-  }
-
+/** Zieht die Hoehenlinie `level` aus einem bereits abgetasteten Feld. */
+export function contourField(
+  field: SampledField,
+  level = 0,
+  opts: ContourOptions = {},
+): Poly[] {
+  const { data: grid, nx, ny, x0, y0, cell } = field;
   const segments: [Vec2, Vec2][] = [];
-  const at = (i: number, j: number) => grid[j * nx + i];
+  const at = (i: number, j: number) => grid[j * nx + i] - level;
 
   for (let j = 0; j < ny - 1; j++) {
     for (let i = 0; i < nx - 1; i++) {
@@ -249,6 +283,77 @@ export function contour(
 }
 
 /**
+ * Verkleinert einen Umriss um `delta` nach innen - ueber das Abstandsfeld
+ * statt ueber verschobene Kanten.
+ *
+ * Der einfache Parallelversatz (`offsetPolygon`) verschiebt jeden Eckpunkt
+ * entlang seiner Winkelhalbierenden. Bei konkaven Stellen - der Kerbe eines
+ * Herzens, den Innenwinkeln eines Sterns - ueberschlagen sich die
+ * verschobenen Kanten und das Ergebnis ist kein gueltiges Polygon mehr.
+ * Die Nulllinie des um `delta` angehobenen Abstandsfelds hat dieses Problem
+ * nicht: sie ist immer ueberschneidungsfrei.
+ *
+ * Rueckgabe sind alle entstehenden Ringe, groesster zuerst. Bei schmalen
+ * Formen kann der verkleinerte Umriss in mehrere Teile zerfallen oder ganz
+ * verschwinden - dann ist die Liste kuerzer oder leer.
+ */
+export function insetPolygon(poly: Poly, delta: number, cell = 0.5): Poly[] {
+  return polygonInsetter(poly, cell)(delta);
+}
+
+/**
+ * Liefert eine Funktion, die denselben Umriss um beliebige Betraege nach
+ * innen versetzt. Das Abstandsfeld wird nur beim ersten Aufruf berechnet -
+ * fuer Rahmen, Lippe und Membranrand aus einem Umriss ist das der
+ * Unterschied zwischen einmal und dreimal Rechenarbeit.
+ */
+export function polygonInsetter(poly: Poly, cell = 0.5): (delta: number) => Poly[] {
+  let field: SampledField | null = null;
+  return (delta: number) => {
+    if (delta <= 0) return [poly];
+    if (!field) {
+      const b = polyBoundsOf(poly);
+      const halfW = Math.max(Math.abs(b.minX), Math.abs(b.maxX)) + cell * 3;
+      const halfH = Math.max(Math.abs(b.minY), Math.abs(b.maxY)) + cell * 3;
+      const index = new EdgeIndex([poly]);
+      field = sampleField(
+        (x, y) => (pointInside(poly, x, y) ? -index.distance(x, y) : index.distance(x, y)),
+        halfW,
+        halfH,
+        cell,
+      );
+    }
+    // Innen ist das Feld negativ; die Hoehenlinie bei -delta liegt genau
+    // `delta` innerhalb des Randes.
+    return contourField(field, -delta, { cell, simplify: cell * 0.2, smooth: 1 });
+  };
+}
+
+function polyBoundsOf(poly: Poly) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of poly) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function pointInside(poly: Poly, px: number, py: number): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [x1, y1] = poly[j];
+    const [x2, y2] = poly[i];
+    if (y1 > py !== y2 > py && px < ((x2 - x1) * (py - y1)) / (y2 - y1) + x1) inside = !inside;
+  }
+  return inside;
+}
+
+/**
  * Ordnet die Ringe aus `contour` zu Regionen: Ringe gegen den Uhrzeigersinn
  * sind Aussenkonturen, Ringe im Uhrzeigersinn sind Loecher und werden der
  * kleinsten sie umschliessenden Aussenkontur zugeschlagen.
@@ -315,7 +420,7 @@ function assembleLoops(segments: [Vec2, Vec2][], cell: number): Poly[] {
 
     for (let guard = 0; guard < segments.length + 4; guard++) {
       loop.push(current[1]);
-      const next = (outgoing.get(key(current[1])) ?? []).find((s) => !used.has(s));
+      const next: [Vec2, Vec2] | undefined = (outgoing.get(key(current[1])) ?? []).find((s) => !used.has(s));
       if (!next) break;
       used.add(next);
       current = next;

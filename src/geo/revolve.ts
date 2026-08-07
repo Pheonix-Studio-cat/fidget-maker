@@ -111,6 +111,19 @@ export function domeCap(
   return revolveProfile(profile, segments);
 }
 
+/**
+ * Radius, mit dem die Innenflaeche einer Kuppelschale die Ebene z=0 trifft.
+ * Damit laesst sich das Loch im Traegerblech passend zur Kuppel bemessen.
+ */
+export function domeCapInnerBaseRadius(baseRadius: number, height: number, wall: number): number {
+  const h = Math.max(0.2, height);
+  const a = Math.max(0.2, baseRadius);
+  const R = (a * a + h * h) / (2 * h);
+  const zc = -Math.sqrt(Math.max(0, R * R - a * a));
+  const Ri = Math.max(0.1, R - wall);
+  return Math.sqrt(Math.max(0, Ri * Ri - zc * zc));
+}
+
 /** Voller Kugelabschnitt (massiv) mit Basis bei z=0. */
 export function solidDome(baseRadius: number, height: number, segments = 48, rings = 16): Mesh {
   const h = Math.max(0.05, height);

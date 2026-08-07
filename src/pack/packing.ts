@@ -7,6 +7,7 @@
  * Abstandsfeld aufgebaut und danach nur noch interpoliert.
  */
 
+import { EdgeIndex } from '../geo/edgeindex.ts';
 import type { Vec2 } from '../geo/mesh.ts';
 import {
   distanceToEdges,
@@ -15,6 +16,49 @@ import {
   type Poly,
   type Region,
 } from '../geo/shapes2d.ts';
+
+/**
+ * Fuellt zeilenweise, welche Gitterpunkte innerhalb der Region liegen.
+ * Ein Strahlentest je Punkt waere derselbe Aufwand noch einmal; hier werden
+ * die Schnittpunkte einer Zeile einmal berechnet und dann die Abschnitte
+ * dazwischen gefuellt.
+ */
+function insideMask(
+  reg: Region,
+  x0: number,
+  y0: number,
+  cell: number,
+  nx: number,
+  ny: number,
+): Uint8Array {
+  const mask = new Uint8Array(nx * ny);
+  const rings = [reg.outline, ...reg.holes].filter((r) => r.length >= 3);
+  const xs: number[] = [];
+
+  for (let j = 0; j < ny; j++) {
+    const y = y0 + j * cell;
+    xs.length = 0;
+    for (const ring of rings) {
+      for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
+        const [x1, y1] = ring[k];
+        const [x2, y2] = ring[i];
+        if (y1 > y !== y2 > y) xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
+      }
+    }
+    if (xs.length === 0) continue;
+    xs.sort((a, b) => a - b);
+    // Gerade-ungerade-Regel: zwischen dem 1. und 2., 3. und 4. Schnittpunkt
+    // usw. liegt Material. Loecher kehren die Zaehlung von selbst um.
+    for (let s = 0; s + 1 < xs.length; s += 2) {
+      let i0 = Math.ceil((xs[s] - x0) / cell);
+      const i1 = Math.floor((xs[s + 1] - x0) / cell);
+      if (i0 < 0) i0 = 0;
+      const end = Math.min(i1, nx - 1);
+      for (let i = i0; i <= end; i++) mask[j * nx + i] = 1;
+    }
+  }
+  return mask;
+}
 
 /** Vorzeichenbehaftetes Abstandsfeld einer Region auf einem regelmaessigen Gitter. */
 export class DistanceField {
@@ -25,6 +69,7 @@ export class DistanceField {
   readonly ny: number;
   private readonly data: Float32Array;
   private readonly reg: Region;
+  private readonly index: EdgeIndex;
 
   constructor(reg: Region, cell = 0.5) {
     this.reg = reg;
@@ -36,12 +81,14 @@ export class DistanceField {
     this.nx = Math.max(2, Math.ceil((b.width + pad * 2) / cell) + 1);
     this.ny = Math.max(2, Math.ceil((b.height + pad * 2) / cell) + 1);
     this.data = new Float32Array(this.nx * this.ny);
+    this.index = new EdgeIndex([reg.outline, ...reg.holes].filter((r) => r.length >= 3));
 
+    const inside = insideMask(reg, this.minX, this.minY, cell, this.nx, this.ny);
     for (let j = 0; j < this.ny; j++) {
       for (let i = 0; i < this.nx; i++) {
-        const x = this.minX + i * cell;
-        const y = this.minY + j * cell;
-        this.data[j * this.nx + i] = exactDistance(reg, x, y);
+        const k = j * this.nx + i;
+        const d = this.index.distance(this.minX + i * cell, this.minY + j * cell);
+        this.data[k] = inside[k] ? d : -d;
       }
     }
   }

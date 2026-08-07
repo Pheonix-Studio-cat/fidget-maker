@@ -127,8 +127,8 @@ function earcutLinked(
   let stop: PolyNode | null = ear;
 
   while (ear!.prev !== ear!.next) {
-    const prev = ear!.prev!;
-    const next = ear!.next!;
+    const prev: PolyNode = ear!.prev!;
+    const next: PolyNode = ear!.next!;
 
     if (invSize ? isEarHashed(ear!, minX, minY, invSize) : isEar(ear!)) {
       triangles.push(prev.i, ear!.i, next.i);

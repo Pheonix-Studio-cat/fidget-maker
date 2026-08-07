@@ -8,6 +8,7 @@
 
 import { earcut } from './earcut.ts';
 import { Mesh, type Vec2, type Vec3 } from './mesh.ts';
+import { triangulateChecked, triangulateFaces } from './robust.ts';
 import {
   ensureCCW,
   ensureCW,
@@ -16,8 +17,11 @@ import {
   type Region,
 } from './shapes2d.ts';
 
-/** Zerlegt eine Region in Dreiecke, deren Umlaufsinn garantiert CCW ist. */
-export function triangulateRegion(reg: Region): Vec2[][] {
+/**
+ * Ein einzelner Zerlegungsdurchlauf. Fuer den normalen Gebrauch ist
+ * `triangulateRegion` gedacht - es prueft das Ergebnis zusaetzlich.
+ */
+export function triangulateOnce(reg: Region): Vec2[][] {
   const flat: number[] = [];
   const holeIndices: number[] = [];
 
@@ -36,25 +40,48 @@ export function triangulateRegion(reg: Region): Vec2[][] {
     const a: Vec2 = [flat[idx[i] * 2], flat[idx[i] * 2 + 1]];
     const b: Vec2 = [flat[idx[i + 1] * 2], flat[idx[i + 1] * 2 + 1]];
     const c: Vec2 = [flat[idx[i + 2] * 2], flat[idx[i + 2] * 2 + 1]];
+    // Beim Anbinden der Loecher legt earcut Bruecken an und dupliziert dabei
+    // Punkte. Dreiecke, bei denen zwei Ecken aufeinanderfallen, sind wirklich
+    // leer und koennen weg. Flaechenlose Dreiecke mit drei verschiedenen
+    // Ecken muessen dagegen bleiben: ihre Kanten gehoeren zur Deckflaeche,
+    // und ohne sie passt der Rand nicht mehr zu den Waenden.
+    if (same(a, b) || same(b, c) || same(a, c)) continue;
     const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-    if (Math.abs(cross) < 1e-12) continue;
     tris.push(cross > 0 ? [a, b, c] : [a, c, b]);
   }
   return tris;
 }
 
-/** Deckflaeche bei z, Normalen nach oben. */
-export function capMesh(reg: Region, z: number, facingUp: boolean): Mesh {
+function same(a: Vec2, b: Vec2): boolean {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
+/**
+ * Geprueft zerlegte Region. Loecher koennen dabei um wenige Mikrometer
+ * verschoben werden - wer daraus auch Waende baut, muss `triangulateChecked`
+ * direkt verwenden und die zurueckgegebene Region benutzen.
+ */
+export function triangulateRegion(reg: Region): Vec2[][] {
+  return triangulateChecked(reg).tris;
+}
+
+/** Wandelt eine fertige Dreiecksliste in eine Deckflaeche bei z. */
+export function trianglesToCap(tris: Vec2[][], z: number, facingUp: boolean): Mesh {
   const m = new Mesh();
-  for (const [a, b, c] of triangulateRegion(reg)) {
+  for (const [a, b, c] of tris) {
     if (facingUp) m.addTriangle([a[0], a[1], z], [b[0], b[1], z], [c[0], c[1], z]);
     else m.addTriangle([a[0], a[1], z], [c[0], c[1], z], [b[0], b[1], z]);
   }
   return m;
 }
 
+/** Deckflaeche bei z, Normalen nach oben. */
+export function capMesh(reg: Region, z: number, facingUp: boolean): Mesh {
+  return trianglesToCap(triangulateRegion(reg), z, facingUp);
+}
+
 /** Senkrechte Wand entlang eines Polygonzugs. */
-function wallMesh(poly: Poly, z0: number, z1: number): Mesh {
+export function wallMesh(poly: Poly, z0: number, z1: number): Mesh {
   const m = new Mesh();
   const n = poly.length;
   for (let i = 0; i < n; i++) {
@@ -86,15 +113,18 @@ export function extrudeRegion(
   const hi = Math.max(z0, z1);
   const m = new Mesh();
 
-  const outline = ensureCCW(reg.outline);
-  m.add(wallMesh(outline, lo, hi));
-  for (const hole of reg.holes) {
-    if (hole.length < 3) continue;
-    m.add(wallMesh(ensureCW(hole), lo, hi));
-  }
+  // Erst zerlegen, dann Waende bauen: die Pruefung kann Loecher minimal
+  // verschieben, und die Waende muessen zur gleichen Lage passen.
+  const checked = triangulateChecked({
+    outline: ensureCCW(reg.outline),
+    holes: reg.holes.filter((h) => h.length >= 3).map(ensureCW),
+  });
 
-  if (capTop) m.add(capMesh(reg, hi, true));
-  if (capBottom) m.add(capMesh(reg, lo, false));
+  m.add(wallMesh(checked.region.outline, lo, hi));
+  for (const hole of checked.region.holes) m.add(wallMesh(hole, lo, hi));
+
+  if (capTop) m.add(trianglesToCap(checked.tris, hi, true));
+  if (capBottom) m.add(trianglesToCap(checked.tris, lo, false));
   return m;
 }
 
@@ -138,18 +168,26 @@ export function chamferedSlab(
   }
 
   const outline = ensureCCW(reg.outline);
-  const holes = reg.holes.map((h) => ensureCW(h));
+  const holes = reg.holes.filter((h) => h.length >= 3).map(ensureCW);
   const botOutline = cb > 0 ? offsetPolygon(outline, -cb) : outline;
   const topOutline = ct > 0 ? offsetPolygon(outline, -ct) : outline;
 
+  // Beide Deckflaechen teilen sich denselben Lochsatz und muessen deshalb
+  // gemeinsam geprueft werden.
+  const all = holes.map((_, i) => i);
+  const checked = triangulateFaces(holes, [
+    { outline: botOutline, holeIndices: all },
+    { outline: topOutline, holeIndices: all },
+  ]);
+
   const m = new Mesh();
-  m.add(capMesh({ outline: botOutline, holes }, z0, false));
+  m.add(trianglesToCap(checked.tris[0], z0, false));
   if (cb > 0) m.add(loftPolys(botOutline, z0, outline, z0 + cb));
   m.add(loftPolys(outline, z0 + cb, outline, z1 - ct));
   if (ct > 0) m.add(loftPolys(outline, z1 - ct, topOutline, z1));
-  m.add(capMesh({ outline: topOutline, holes }, z1, true));
+  m.add(trianglesToCap(checked.tris[1], z1, true));
 
-  for (const hole of holes) m.add(wallMesh(hole, z0, z1));
+  for (const hole of checked.holes) m.add(wallMesh(hole, z0, z1));
   return m;
 }
 
