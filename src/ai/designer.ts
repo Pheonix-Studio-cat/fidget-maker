@@ -1,15 +1,21 @@
 /**
  * KI-Entwurf: aus Beschreibung und Bildern wird eine Fidget-Konfiguration.
  *
- * Die Antwort wird ueber Structured Outputs an das Schema aus `schema.ts`
- * gebunden - damit kommt garantiert ein Objekt zurueck, das zu den Reglern
- * der Oberflaeche passt, statt Text, den man erst muehsam auseinandernehmen
- * muesste.
+ * Zwei Wege fuehren zum selben Ergebnis:
+ *
+ * - Anbieter mit OpenAI-Protokoll (OpenRouter, Groq - dort laufen die
+ *   Llama-Modelle). Das Schema geht als Text in den Systemprompt, die Antwort
+ *   kommt als JSON-Objekt zurueck.
+ * - Anthropic, ueber Structured Outputs. Zurzeit ausgeblendet, siehe
+ *   `providers.ts`.
+ *
+ * Entscheidend ist in beiden Faellen nicht, wie brav das Modell antwortet,
+ * sondern `parseDesign`: was dort herauskommt, ist immer eine baubare
+ * Konfiguration - unbekannte Schluessel fliegen raus, Zahlen werden begrenzt.
  *
  * Der Schluessel bleibt im Browser des Nutzers. Das ist fuer ein Werkzeug,
- * das jemand lokal betreibt, in Ordnung - fuer eine oeffentliche Seite waere
- * ein kleiner Server davor die richtige Loesung, weil der Schluessel sonst
- * im Browser jedes Besuchers liegt.
+ * das jemand fuer sich betreibt, in Ordnung - fuer eine oeffentliche Seite
+ * waere ein kleiner Server davor die richtige Loesung.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -17,6 +23,10 @@ import { MODELS, modelById } from '../models/index.ts';
 import { normalizeParams, type Params } from '../models/types.ts';
 import { heuristicDesign } from './heuristic.ts';
 import { buildDesignSchema, describeCatalog } from './schema.ts';
+import { providerById, type AiProvider } from './providers.ts';
+
+export { AI_PROVIDERS, defaultProvider, providerById, visibleProviders } from './providers.ts';
+export type { AiModel, AiProvider } from './providers.ts';
 
 export interface DesignResult {
   modelId: string;
@@ -36,30 +46,14 @@ export interface DesignRequest {
   prompt: string;
   images?: DesignImage[];
   apiKey?: string;
+  /** Anbieter-Kennung aus `providers.ts`. */
+  provider?: string;
+  /** Modellkennung beim Anbieter. */
   model?: string;
   signal?: AbortSignal;
 }
 
-/** Auswahl fuer die Oberflaeche. Ohne Schluessel greift die Stichwortsuche. */
-export const AI_MODELS = [
-  {
-    id: 'claude-opus-5',
-    label: 'Claude Opus 5',
-    help: 'Beste Entwuerfe, versteht auch knappe oder widerspruechliche Wuensche.',
-  },
-  {
-    id: 'claude-sonnet-5',
-    label: 'Claude Sonnet 5',
-    help: 'Deutlich guenstiger und schneller, fuer die meisten Wuensche voellig ausreichend.',
-  },
-  {
-    id: 'claude-haiku-4-5',
-    label: 'Claude Haiku 4.5',
-    help: 'Am schnellsten und billigsten. Gut fuer einfache Vorgaben.',
-  },
-] as const;
-
-const SYSTEM_PROMPT = `Du bist der Entwurfsassistent eines Generators fuer 3D-druckbare Fidgets.
+const RULES = `Du bist der Entwurfsassistent eines Generators fuer 3D-druckbare Fidgets.
 
 Aus der Beschreibung - und, falls vorhanden, den mitgeschickten Bildern -
 waehlst du eines der verfuegbaren Fidgets aus und stellst seine Parameter so
@@ -80,6 +74,23 @@ Verfuegbare Fidgets und ihre Parameter:
 
 ${describeCatalog(MODELS)}`;
 
+/** Systemprompt fuer Anthropic - dort haelt das Schema die Antwort in Form. */
+const SYSTEM_PROMPT = RULES;
+
+/**
+ * Systemprompt fuer die OpenAI-kompatiblen Anbieter. Dort gibt es keine
+ * garantierte Schema-Bindung, also steht das Schema im Text und die Regel,
+ * ausschliesslich JSON zu liefern, direkt daneben.
+ */
+const OPENAI_SYSTEM_PROMPT = `${RULES}
+
+Antworte ausschliesslich mit einem JSON-Objekt nach diesem Schema. Kein
+Fliesstext davor oder danach, keine Code-Umrandung:
+
+${JSON.stringify(buildDesignSchema(MODELS), null, 1)}`;
+
+const FALLBACK_PROMPT = 'Ueberrasche mich mit einem schoenen Fidget.';
+
 /**
  * Entwirft ein Fidget. Ohne API-Schluessel - oder wenn der Aufruf scheitert -
  * wird auf die Stichwortsuche zurueckgefallen, damit die Oberflaeche nie
@@ -88,6 +99,96 @@ ${describeCatalog(MODELS)}`;
 export async function designFidget(req: DesignRequest): Promise<DesignResult> {
   if (!req.apiKey) return heuristicDesign(req.prompt);
 
+  const provider = providerById(req.provider ?? '');
+  const model = req.model?.trim() || provider.models[0].id;
+
+  return provider.api === 'anthropic'
+    ? designWithAnthropic(req, model)
+    : designWithOpenAi(req, provider, model);
+}
+
+// --- OpenAI-Protokoll: OpenRouter, Groq ----------------------------------
+
+async function designWithOpenAi(
+  req: DesignRequest,
+  provider: AiProvider,
+  model: string,
+): Promise<DesignResult> {
+  const parts: unknown[] = [];
+  if (provider.vision) {
+    for (const image of req.images ?? []) {
+      parts.push({
+        type: 'image_url',
+        image_url: { url: `data:${image.mediaType};base64,${image.data}` },
+      });
+    }
+  }
+  parts.push({ type: 'text', text: req.prompt.trim() || FALLBACK_PROMPT });
+
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+    method: 'POST',
+    signal: req.signal,
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${req.apiKey}`,
+      // OpenRouter zeigt den Titel in der Nutzungsuebersicht an. Der
+      // Referer-Kopf laesst sich im Browser nicht setzen, deshalb nur der Titel.
+      'x-title': 'Fidget Maker',
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.4,
+      max_tokens: 2048,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: OPENAI_SYSTEM_PROMPT },
+        { role: 'user', content: parts },
+      ],
+    }),
+  });
+
+  if (!response.ok) throw new Error(await describeHttpError(response, provider));
+
+  const body = (await response.json()) as {
+    choices?: { message?: { content?: string } }[];
+    error?: { message?: string };
+  };
+  if (body.error?.message) throw new Error(`${provider.label}: ${body.error.message}`);
+
+  const text = body.choices?.[0]?.message?.content ?? '';
+  if (!text.trim()) throw new Error('Die KI hat keine verwertbare Antwort geliefert.');
+
+  return parseDesign(text);
+}
+
+/** Aus dem Fehlerkoerper einen Satz machen, mit dem der Nutzer etwas anfangen kann. */
+async function describeHttpError(response: Response, provider: AiProvider): Promise<string> {
+  let detail = '';
+  try {
+    const body = (await response.json()) as { error?: { message?: string } | string };
+    detail = typeof body.error === 'string' ? body.error : (body.error?.message ?? '');
+  } catch {
+    /* Fehlerkoerper war kein JSON - dann bleibt es beim Statuscode. */
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return `${provider.label} hat den Schluessel abgelehnt. Stimmt er noch? Neu holen unter ${provider.keyUrl}`;
+  }
+  if (response.status === 402) {
+    return `${provider.label} meldet zu wenig Guthaben. Waehle ein Modell mit "(gratis)" oder lade auf.`;
+  }
+  if (response.status === 404) {
+    return `${provider.label} kennt das Modell nicht. Vermutlich wurde die Modellkennung umbenannt - waehle ein anderes Modell oder trage eine eigene Kennung ein.`;
+  }
+  if (response.status === 429) {
+    return `${provider.label} bremst gerade (zu viele Anfragen). Warte kurz oder nimm ein bezahltes Modell.`;
+  }
+  return `${provider.label} antwortet mit Fehler ${response.status}${detail ? `: ${detail}` : ''}`;
+}
+
+// --- Anthropic (ausgeblendet, aber funktionsfaehig) -----------------------
+
+async function designWithAnthropic(req: DesignRequest, model: string): Promise<DesignResult> {
   const client = new Anthropic({
     apiKey: req.apiKey,
     // Der Schluessel gehoert dem Nutzer und liegt in seinem Browser.
@@ -102,9 +203,8 @@ export async function designFidget(req: DesignRequest): Promise<DesignResult> {
       source: { type: 'base64', media_type: image.mediaType, data: image.data },
     });
   }
-  content.push({ type: 'text', text: req.prompt.trim() || 'Ueberrasche mich mit einem schoenen Fidget.' });
+  content.push({ type: 'text', text: req.prompt.trim() || FALLBACK_PROMPT });
 
-  const model = req.model ?? AI_MODELS[0].id;
   const params = {
     model,
     max_tokens: 4096,
@@ -137,15 +237,38 @@ export async function designFidget(req: DesignRequest): Promise<DesignResult> {
   return parseDesign(text);
 }
 
+// --- Antwort auswerten ----------------------------------------------------
+
+/**
+ * Holt das JSON-Objekt aus der Antwort.
+ *
+ * Offene Modelle halten sich nicht immer an "nur JSON": mal steht eine
+ * Code-Umrandung darum, mal ein einleitender Satz davor. Beides wird hier
+ * abgeraeumt, statt die Anfrage daran scheitern zu lassen.
+ */
+function extractJson(text: string): string {
+  const trimmed = text.trim();
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fenced ? fenced[1].trim() : trimmed;
+  if (body.startsWith('{')) return body;
+
+  const first = body.indexOf('{');
+  const last = body.lastIndexOf('}');
+  if (first >= 0 && last > first) return body.slice(first, last + 1);
+
+  return body;
+}
+
 /** Prueft die Antwort und bringt sie in die Form, die die Generatoren erwarten. */
 export function parseDesign(text: string): DesignResult {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = JSON.parse(extractJson(text));
   } catch {
     throw new Error('Die Antwort der KI war kein gueltiges JSON.');
   }
-  if (typeof raw !== 'object' || raw === null) {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('Die Antwort der KI hatte nicht die erwartete Struktur.');
   }
 

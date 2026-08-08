@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 
 import { MODELS, modelById } from '../src/models/index.ts';
 import { buildDesignSchema, describeCatalog, findSchemaConflicts } from '../src/ai/schema.ts';
-import { parseDesign } from '../src/ai/designer.ts';
+import {
+  AI_PROVIDERS,
+  defaultProvider,
+  designFidget,
+  parseDesign,
+  providerById,
+  visibleProviders,
+} from '../src/ai/designer.ts';
 import { heuristicDesign } from '../src/ai/heuristic.ts';
 
 test('Kein Parametername hat in zwei Modellen unterschiedliche Typen', () => {
@@ -63,6 +70,60 @@ test('parseDesign faengt unbekannte Modelle und kaputtes JSON ab', () => {
   assert.ok(MODELS.some((m) => m.id === r.modelId), 'muss auf ein echtes Modell zurueckfallen');
   assert.throws(() => parseDesign('kein json'), /gueltiges JSON/);
   assert.throws(() => parseDesign('42'), /Struktur/);
+  assert.throws(() => parseDesign('[1, 2, 3]'), /Struktur/);
+});
+
+test('parseDesign vertraegt geschwaetzige Antworten offener Modelle', () => {
+  const inhalt = { modelId: 'spinner', params: { arms: 4 }, name: 'Vierarmer', reason: 'weil' };
+
+  // Llama & Co. verpacken die Antwort gern in eine Code-Umrandung ...
+  const umrandet = parseDesign('```json\n' + JSON.stringify(inhalt) + '\n```');
+  assert.equal(umrandet.modelId, 'spinner');
+  assert.equal(umrandet.params.arms, 4);
+
+  // ... oder stellen einen Satz davor und haengen einen hinten dran.
+  const geschwaetzig = parseDesign(
+    `Gerne! Hier ist dein Entwurf:\n${JSON.stringify(inhalt)}\nViel Spass beim Drucken.`,
+  );
+  assert.equal(geschwaetzig.modelId, 'spinner');
+  assert.equal(geschwaetzig.name, 'Vierarmer');
+});
+
+test('Jeder Anbieter ist vollstaendig beschrieben', () => {
+  assert.ok(AI_PROVIDERS.length >= 2, 'es braucht mehr als einen Anbieter');
+  for (const p of AI_PROVIDERS) {
+    assert.ok(p.models.length > 0, `${p.id} hat keine Modelle`);
+    assert.match(p.keyUrl, /^https:\/\//, `${p.id}: keine Bezugsquelle fuer den Schluessel`);
+    assert.ok(p.note.length > 20, `${p.id}: der Hinweis ist zu duenn`);
+    for (const m of p.models) {
+      assert.ok(m.id && m.label && m.help.length > 10, `${p.id}/${m.id} ist unvollstaendig`);
+    }
+    if (p.api === 'openai') {
+      assert.match(p.baseUrl ?? '', /^https:\/\//, `${p.id}: baseUrl fehlt`);
+      assert.ok(!p.baseUrl.endsWith('/'), `${p.id}: baseUrl darf nicht auf / enden`);
+    }
+    assert.equal(providerById(p.id).id, p.id);
+  }
+});
+
+test('Claude ist ausgeblendet, Llama steht vorne', () => {
+  const sichtbar = visibleProviders();
+  assert.ok(sichtbar.length > 0, 'irgendetwas muss waehlbar bleiben');
+  assert.ok(
+    !sichtbar.some((p) => p.id === 'anthropic'),
+    'Anthropic soll nicht mehr in der Auswahl auftauchen',
+  );
+
+  // Ausgeblendet heisst nicht geloescht - der Code bleibt erreichbar.
+  const claude = AI_PROVIDERS.find((p) => p.id === 'anthropic');
+  assert.ok(claude, 'Anthropic muss im Katalog bleiben');
+  assert.equal(claude.hidden, true);
+  assert.ok(claude.models.some((m) => m.id === 'claude-opus-5'));
+
+  // Voreinstellung ist Llama - auch wenn frueher Anthropic gespeichert war.
+  assert.match(defaultProvider(null).label, /Llama/);
+  assert.equal(defaultProvider('anthropic').id, sichtbar[0].id);
+  assert.equal(defaultProvider('groq').id, 'groq');
 });
 
 test('Jedes Ergebnis der KI laesst sich sofort bauen', (t) => {
@@ -71,6 +132,132 @@ test('Jedes Ergebnis der KI laesst sich sofort bauen', (t) => {
     const result = modelById(r.modelId).build(r.params);
     t.diagnostic(`${model.id}: ${result.parts.length} Teile`);
     assert.ok(result.parts.length > 0);
+  }
+});
+
+/**
+ * Die echten Endpunkte lassen sich hier nicht aufrufen, der Aufbau der
+ * Anfrage schon: Adresse, Kopfzeilen und Nachrichtenform sind das, was beim
+ * Anbieterwechsel kaputtgeht.
+ */
+test('Der Aufruf an Llama hat die richtige Form', async () => {
+  const echt = globalThis.fetch;
+  let gesehen = null;
+  globalThis.fetch = async (url, init) => {
+    gesehen = { url, init };
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                modelId: 'stressball',
+                params: { diameter: 70 },
+                name: 'Knautschball',
+                reason: 'weich',
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  };
+
+  try {
+    const design = await designFidget({
+      prompt: 'ein weicher Ball',
+      apiKey: 'sk-or-v1-testschluessel',
+      provider: 'openrouter',
+      images: [{ data: 'AAAA', mediaType: 'image/png' }],
+    });
+    assert.equal(design.modelId, 'stressball');
+    assert.equal(design.params.diameter, 70);
+    assert.equal(design.source, 'ki');
+  } finally {
+    globalThis.fetch = echt;
+  }
+
+  assert.equal(gesehen.url, 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(gesehen.init.method, 'POST');
+  assert.equal(gesehen.init.headers.authorization, 'Bearer sk-or-v1-testschluessel');
+
+  const body = JSON.parse(gesehen.init.body);
+  assert.equal(body.model, 'meta-llama/llama-3.3-70b-instruct:free');
+  assert.equal(body.response_format.type, 'json_object');
+  assert.equal(body.messages[0].role, 'system');
+  assert.match(body.messages[0].content, /Pop-It/, 'der Katalog muss im Systemprompt stehen');
+  assert.match(body.messages[0].content, /json/i, 'das Schema muss im Systemprompt stehen');
+
+  const user = body.messages[1].content;
+  assert.equal(user.at(-1).text, 'ein weicher Ball');
+  assert.ok(
+    user.some((p) => p.type === 'image_url' && p.image_url.url.startsWith('data:image/png;base64,')),
+    'Bilder muessen als data-URL mitgehen',
+  );
+});
+
+test('Groq bekommt keine Bilder geschickt', async () => {
+  const echt = globalThis.fetch;
+  let body = null;
+  globalThis.fetch = async (_url, init) => {
+    body = JSON.parse(init.body);
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: '{"modelId":"popit","params":{}}' } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  };
+
+  try {
+    await designFidget({
+      prompt: 'Pop-It',
+      apiKey: 'gsk_test',
+      provider: 'groq',
+      images: [{ data: 'AAAA', mediaType: 'image/png' }],
+    });
+  } finally {
+    globalThis.fetch = echt;
+  }
+
+  // Groq wertet die Bilder nicht aus - sie mitzuschicken waere nur Ballast.
+  assert.ok(!body.messages[1].content.some((p) => p.type === 'image_url'));
+});
+
+test('Fehler des Anbieters kommen als lesbarer Satz an', async () => {
+  const echt = globalThis.fetch;
+  const faelle = [
+    [401, /Schluessel abgelehnt/],
+    [402, /Guthaben/],
+    [404, /kennt das Modell nicht/],
+    [429, /bremst/],
+  ];
+
+  try {
+    for (const [status, muster] of faelle) {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: { message: 'nope' } }), { status });
+      await assert.rejects(
+        designFidget({ prompt: 'x', apiKey: 'k', provider: 'openrouter' }),
+        muster,
+        `Status ${status}`,
+      );
+    }
+  } finally {
+    globalThis.fetch = echt;
+  }
+});
+
+test('Ohne Schluessel wird nichts verschickt', async () => {
+  const echt = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('Ohne Schluessel darf keine Anfrage rausgehen.');
+  };
+  try {
+    const design = await designFidget({ prompt: 'Spinner mit vier Armen' });
+    assert.equal(design.source, 'heuristik');
+    assert.equal(design.modelId, 'spinner');
+  } finally {
+    globalThis.fetch = echt;
   }
 });
 

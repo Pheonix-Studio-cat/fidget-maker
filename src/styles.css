@@ -334,6 +334,7 @@ body {
 .ctl__select,
 .field select,
 .field input[type="password"],
+.field input[type="text"],
 .field textarea {
   width: 100%;
   padding: 7px 9px;

@@ -131,17 +131,38 @@
           <details class="field">
             <summary class="field__label">KI-Zugang</summary>
             <label class="field">
-              <span class="field__label">API-Schluessel (Anthropic)</span>
-              <input id="ai-key" type="password" autocomplete="off" placeholder="sk-ant-..." />
+              <span class="field__label">Anbieter</span>
+              <select id="ai-provider"></select>
+              <p id="ai-provider-note" class="field__hint"></p>
+            </label>
+            <label class="field">
+              <span class="field__label">Modell</span>
+              <select id="ai-model"></select>
+              <p id="ai-model-help" class="field__hint"></p>
+            </label>
+            <label class="field">
+              <span class="field__label">API-Schluessel</span>
+              <input id="ai-key" type="password" autocomplete="off" />
               <p class="field__hint">
-                Wird nur in diesem Browser gespeichert und direkt an Anthropic geschickt.
+                Wird nur in diesem Browser gespeichert und direkt an den gewaehlten
+                Anbieter geschickt. Schluessel holen:
+                <a id="ai-key-link" href="#" target="_blank" rel="noopener noreferrer">Anbieterseite</a>.
                 Ohne Schluessel entwirft eine eingebaute Stichwortsuche - die versteht
                 deutlich weniger, laeuft dafuer sofort und kostet nichts.
               </p>
             </label>
             <label class="field">
-              <span class="field__label">Modell</span>
-              <select id="ai-model"></select>
+              <span class="field__label">Eigene Modellkennung (optional)</span>
+              <input
+                id="ai-model-custom"
+                type="text"
+                autocomplete="off"
+                placeholder="z. B. meta-llama/llama-3.1-405b-instruct"
+              />
+              <p class="field__hint">
+                Ueberschreibt die Auswahl oben. Nuetzlich, wenn ein Anbieter ein Modell
+                umbenennt oder du ein anderes ausprobieren willst.
+              </p>
             </label>
           </details>
 

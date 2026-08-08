@@ -107,23 +107,46 @@ Im Dialog "Von der KI entwerfen lassen" beschreibst du in einem Satz, was
 du willst ("ein kleines Pop-It in Herzform, rot, fuer den Schluesselbund").
 Die KI waehlt daraufhin das passende Fidget und setzt alle Parameter.
 
-- **Mit API-Schluessel** laeuft die Anfrage direkt aus dem Browser an die
-  Anthropic-API, mit einem Structured-Output-Schema, das aus den echten
-  Parameterdefinitionen der Modelle erzeugt wird. Die KI kann also gar
-  keinen Parameter erfinden, den es nicht gibt. Modelle zur Auswahl:
-  Opus 5, Sonnet 5, Haiku 4.5.
+### Anbieter
+
+Gerechnet wird mit **Llama 3** - das kostet fuer den privaten Gebrauch nichts
+oder fast nichts. Zur Wahl stehen:
+
+| Anbieter | Modelle | Was es kostet | Schluessel holen |
+| --- | --- | --- | --- |
+| **OpenRouter** | Llama 3.3 70B, Llama 3.2 11B Vision, Llama 3.1 8B - jeweils in einer Gratisfassung | Die Modelle mit `:free` kosten nichts, sind dafuer im Durchsatz gedrosselt. Die bezahlte Fassung liegt bei Bruchteilen eines Cents pro Entwurf. | <https://openrouter.ai/keys> |
+| **Groq** | Llama 3.3 70B, Llama 3.1 8B | Kostenloses Kontingent, sehr schnell (meist unter zwei Sekunden). Wertet keine Bilder aus. | <https://console.groq.com/keys> |
+
+Beide sprechen dasselbe Protokoll, deshalb steckt der Unterschied nur in
+`src/ai/providers.ts`. Willst du ein Modell, das dort nicht steht, traegst du
+seine Kennung im Feld **Eigene Modellkennung** ein - das ueberschreibt die
+Auswahl.
+
+Anthropic (Claude) ist weiterhin implementiert, aber **ausgeblendet**: der
+Eintrag in `providers.ts` traegt `hidden: true` und taucht deshalb nicht im
+Auswahlmenue auf. Ein `hidden: false` holt ihn zurueck.
+
+### Wie es funktioniert
+
+- **Mit API-Schluessel** geht die Anfrage direkt aus dem Browser an den
+  gewaehlten Anbieter. Das Antwortschema wird aus den echten
+  Parameterdefinitionen der Modelle erzeugt und liegt im Systemprompt.
 - **Ohne Schluessel** springt eine Stichwortsuche ein. Sie versteht Form,
   Farbe, Groesse, Zahlwoerter und Sonderwuensche auf Deutsch und Englisch
-  und liefert immer ein baubares Ergebnis.
+  und liefert immer ein baubares Ergebnis - sofort und kostenlos.
 
-In beiden Faellen wird das Ergebnis nochmal begrenzt und gesaeubert
-(`normalizeParams`), bevor gebaut wird.
+Was zurueckkommt, wird in jedem Fall begrenzt und gesaeubert
+(`normalizeParams`), bevor gebaut wird: unbekannte Parameter fliegen raus,
+Zahlen werden in ihre Bereiche gezwungen, ungueltige Auswahlwerte fallen auf
+die Vorgabe zurueck. Die KI kann also nichts Unbaubares erzeugen, egal wie
+sie antwortet. Offene Modelle halten sich nicht immer an "nur JSON" - eine
+Code-Umrandung oder ein einleitender Satz wird beim Auswerten abgeraeumt.
 
 **Zum Schluessel:** Er wird nur in deinem Browser gespeichert
-(`localStorage`) und ausschliesslich an `api.anthropic.com` geschickt. Es
-gibt keinen Server dieses Projekts, der ihn sehen koennte. Auf einem
-fremden Rechner solltest du ihn trotzdem nicht eintragen - jeder mit
-Zugriff auf den Browser kann ihn auslesen.
+(`localStorage`, ein Fach pro Anbieter) und ausschliesslich an den
+gewaehlten Anbieter geschickt. Es gibt keinen Server dieses Projekts, der
+ihn sehen koennte. Auf einem fremden Geraet solltest du ihn trotzdem nicht
+eintragen - jeder mit Zugriff auf den Browser kann ihn auslesen.
 
 ## Aufbau
 
@@ -134,7 +157,7 @@ src/pack/     Kreis-Packing im Abstandsfeld (vier Muster)
 src/catalog/  Masse und Preise der Kaufteile, Materialien
 src/models/   die fuenf Generatoren, je mit Parametern und Voreinstellungen
 src/export/   STL, 3MF, Plattenanordnung, Anleitungstext
-src/ai/       Schema, Anthropic-Aufruf, Stichwortsuche als Rueckfallebene
+src/ai/       Anbieter (Llama/Claude), Schema, Aufruf, Stichwortsuche
 src/worker/   baut und exportiert im Web Worker
 src/ui/       Galerie, Regler, three.js-Viewer, KI-Dialog
 public/       Symbole und Manifest fuer "Zum Home-Bildschirm"
@@ -150,7 +173,7 @@ Loechern wiederholt (`src/geo/robust.ts`).
 ## Tests
 
 ```bash
-npm test             # 51 Einheitstests: Geometrie, Packing, SDF,
+npm test             # 58 Einheitstests: Geometrie, Packing, SDF,
                      # Modelle, Export, KI
 npm run typecheck
 ```
