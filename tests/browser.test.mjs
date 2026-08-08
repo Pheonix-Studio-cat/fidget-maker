@@ -21,13 +21,13 @@ const BASE = process.env.PREVIEW_URL ?? 'http://localhost:4173/';
 // wuerde sonst einen eigenen Build nachladen wollen.
 const EXECUTABLE = process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium';
 
-async function open() {
+async function open(options = {}) {
   const browser = await chromium.launch({
     executablePath: existsSync(EXECUTABLE) ? EXECUTABLE : undefined,
     // WebGL braucht im Container den Software-Rasterizer.
     args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
   });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, ...options });
 
   const problems = [];
   page.on('console', (msg) => {
@@ -197,6 +197,82 @@ test('Die Galerie zeigt gerenderte Vorschaubilder', async (t) => {
     await browser.close();
   }
 });
+
+/**
+ * Der Fidget Maker soll auf dem iPad im Browser benutzbar sein. Geprueft wird
+ * beides, was dort schiefgeht: ein Layout, das die Buehne oder die Kennzahlen
+ * zerdrueckt, und Bedienelemente, die zu klein zum Antippen sind.
+ */
+for (const [name, viewport] of [
+  ['iPad quer', { width: 1180, height: 820 }],
+  ['iPad hoch', { width: 820, height: 1180 }],
+  ['iPad mini hoch', { width: 768, height: 1024 }],
+]) {
+  test(`Auf dem ${name} ist alles bedienbar`, async (t) => {
+    const { browser, page, problems } = await open({
+      viewport,
+      hasTouch: true,
+      isMobile: true,
+      deviceScaleFactor: 2,
+    });
+    try {
+      const box = await page.evaluate(() => {
+        const rect = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          const b = el.getBoundingClientRect();
+          return { w: Math.round(b.width), h: Math.round(b.height) };
+        };
+        return {
+          overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          stage: rect('.stage'),
+          left: rect('.panel--left'),
+          right: rect('.panel--right'),
+          // Alles, was man antippen soll, muss mindestens 32 Punkte hoch sein.
+          tooSmall: [...document.querySelectorAll('button, select, .tab, .preset, .chip')]
+            .filter((el) => {
+              const b = el.getBoundingClientRect();
+              return b.width > 0 && b.height > 0 && b.height < 32;
+            })
+            .map((el) => el.className || el.tagName),
+        };
+      });
+      t.diagnostic(
+        `Buehne ${box.stage.w}x${box.stage.h}, links ${box.left.h}, rechts ${box.right.h}`,
+      );
+
+      assert.equal(box.overflow, false, 'die Seite darf nicht seitlich scrollen');
+      assert.ok(box.stage.h >= 240, `die Buehne ist mit ${box.stage.h} px zu flach`);
+      assert.ok(box.left.h >= 300, `die Einstellungen sind mit ${box.left.h} px zu flach`);
+      assert.ok(box.right.h >= 300, `die Kennzahlen sind mit ${box.right.h} px zu flach`);
+      assert.deepEqual(box.tooSmall, [], 'zu kleine Tippflaechen');
+
+      // Mit dem Finger: eine Voreinstellung waehlen und das Modell drehen.
+      await page.locator('.preset', { hasText: 'Maximale Blasenzahl' }).tap();
+      await page.waitForFunction(
+        () => !/wird berechnet/.test(document.querySelector('#status')?.textContent ?? ''),
+        { timeout: 40000 },
+      );
+      const blasen = Number(
+        await page.locator('.stat', { hasText: 'Blasen' }).first().locator('.stat__value').textContent(),
+      );
+      assert.ok(blasen > 100, `Voreinstellung per Fingertipp wirkt nicht: ${blasen} Blasen`);
+
+      const stage = await page.locator('.stage').boundingBox();
+      const before = await page.evaluate(() => {
+        const c = document.querySelector('#view');
+        return c.getContext('webgl2') ? 'ok' : null;
+      });
+      assert.equal(before, 'ok', 'kein WebGL-Kontext');
+
+      await page.touchscreen.tap(stage.x + stage.width / 2, stage.y + stage.height / 2);
+
+      assert.deepEqual(problems, [], `Fehler in der Konsole: ${problems.join(' | ')}`);
+    } finally {
+      await browser.close();
+    }
+  });
+}
 
 test('Der Export liefert ein Paket mit 3MF, STL und Anleitung', async (t) => {
   const { browser, page } = await open();

@@ -1,0 +1,17 @@
+{
+  "name": "Fidget Maker",
+  "short_name": "Fidget Maker",
+  "description": "Fidgets entwerfen und als 3MF oder STL fuer Bambu Studio exportieren.",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#12161c",
+  "theme_color": "#12161c",
+  "icons": [
+    { "src": "./apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -8,7 +8,34 @@ Bambu Studio oeffnen und drucken kannst.
 Alles rechnet im Browser. Es gibt keinen Server, keine Anmeldung und keine
 Datenbank.
 
-## Schnellstart
+## Im Browser benutzen
+
+**<https://pheonix-studio-cat.github.io/fidget-maker/>**
+
+Die Seite liegt auf GitHub Pages und wird bei jedem Push auf `main` neu
+gebaut (`.github/workflows/pages.yml`) - aber nur, wenn Typpruefung und
+Einheitstests durchlaufen.
+
+> Einmalig noetig, damit das Deployment greift: im Repository unter
+> **Settings → Pages → Build and deployment → Source** den Eintrag
+> **GitHub Actions** waehlen.
+
+### Auf dem iPad
+
+Laeuft in Safari, ohne irgendetwas zu installieren. Die Oberflaeche ist auf
+Tablets abgestimmt:
+
+- **Quer** stehen Einstellungen, 3D-Ansicht und Kennzahlen nebeneinander.
+- **Hoch** liegt die 3D-Ansicht oben, darunter Einstellungen und Kennzahlen
+  je zur Haelfte.
+- Regler, Reiter und Knoepfe sind auf Fingergroesse gebracht; das Modell
+  dreht man mit einem Finger, zoomt mit zwei.
+- Ueber *Teilen → Zum Home-Bildschirm* laeuft der Fidget Maker mit eigenem
+  Symbol und ohne Adressleiste.
+- Der Export landet als ZIP in **Dateien**. Von dort laesst es sich in
+  Bambu Studio oder in die Handy-App weiterreichen.
+
+## Selbst betreiben
 
 ```bash
 npm install
@@ -109,6 +136,7 @@ src/export/   STL, 3MF, Plattenanordnung, Anleitungstext
 src/ai/       Schema, Anthropic-Aufruf, Stichwortsuche als Rueckfallebene
 src/worker/   baut und exportiert im Web Worker
 src/ui/       Galerie, Regler, three.js-Viewer, KI-Dialog
+public/       Symbole und Manifest fuer "Zum Home-Bildschirm"
 ```
 
 Es gibt bewusst keine CSG-Bibliothek. Loecher und Taschen entstehen als
@@ -126,10 +154,12 @@ npm test             # 51 Einheitstests: Geometrie, Packing, SDF,
 npm run typecheck
 ```
 
-Der Oberflaechentest faehrt einen echten Browser und geht den Weg eines
-Nutzers durch - Fidget waehlen, Regler bewegen, Voreinstellung laden, KI
-ohne Schluessel entwerfen lassen, exportieren und das heruntergeladene ZIP
-auspacken. Er braucht eine laufende Vorschau:
+Die zehn Oberflaechentests fahren einen echten Browser und gehen den Weg
+eines Nutzers durch - Fidget waehlen, Regler bewegen, Voreinstellung laden,
+KI ohne Schluessel entwerfen lassen, exportieren und das heruntergeladene
+ZIP auspacken. Drei davon laufen in iPad-Groesse mit Fingerbedienung und
+pruefen, dass nichts zerdrueckt oder zu klein zum Antippen ist. Sie
+brauchen eine laufende Vorschau:
 
 ```bash
 npm run build
