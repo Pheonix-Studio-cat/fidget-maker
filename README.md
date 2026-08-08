@@ -16,9 +16,10 @@ Die Seite liegt auf GitHub Pages und wird bei jedem Push auf `main` neu
 gebaut (`.github/workflows/pages.yml`) - aber nur, wenn Typpruefung und
 Einheitstests durchlaufen.
 
-> Einmalig noetig, damit das Deployment greift: im Repository unter
+> Der Workflow schaltet Pages beim ersten Lauf selbst frei. Sollte das an
+> den Repository-Rechten scheitern, hilft ein Griff von Hand: unter
 > **Settings → Pages → Build and deployment → Source** den Eintrag
-> **GitHub Actions** waehlen.
+> **GitHub Actions** waehlen und den Workflow erneut starten.
 
 ### Auf dem iPad
 
