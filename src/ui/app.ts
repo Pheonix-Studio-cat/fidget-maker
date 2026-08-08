@@ -10,13 +10,25 @@
 import { MODELS, modelById } from '../models/index.ts';
 import { normalizeParams, type FidgetModel, type Params, type ParamValue } from '../models/types.ts';
 import { materialById } from '../catalog/parts.ts';
-import { AI_MODELS, designFidget, type DesignImage } from '../ai/designer.ts';
+import {
+  defaultProvider,
+  designFidget,
+  providerById,
+  visibleProviders,
+  type AiProvider,
+  type DesignImage,
+} from '../ai/designer.ts';
 import type { PartPayload, WorkerRequest, WorkerResponse } from '../worker/builder.ts';
 import { renderControls } from './controls.ts';
 import { Viewer } from './viewer.ts';
 
+/** Schluessel liegen pro Anbieter, damit ein Wechsel den anderen nicht loescht. */
 const KEY_STORAGE = 'fidget-maker.apiKey';
+const PROVIDER_STORAGE = 'fidget-maker.aiProvider';
 const MODEL_STORAGE = 'fidget-maker.aiModel';
+const CUSTOM_MODEL_STORAGE = 'fidget-maker.aiModelCustom';
+
+const keyStorageFor = (provider: string) => `${KEY_STORAGE}.${provider}`;
 
 function byId<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -464,19 +476,39 @@ export class App {
   // --- KI ----------------------------------------------------------------
 
   private wireAi(): void {
-    const select = byId<HTMLSelectElement>('ai-model');
-    for (const entry of AI_MODELS) {
+    this.migrateStoredKey();
+
+    const providers = byId<HTMLSelectElement>('ai-provider');
+    for (const entry of visibleProviders()) {
       const option = el('option');
       option.value = entry.id;
-      option.textContent = `${entry.label} - ${entry.help}`;
-      select.append(option);
+      option.textContent = entry.label;
+      providers.append(option);
     }
-    select.value = localStorage.getItem(MODEL_STORAGE) ?? AI_MODELS[0].id;
-    select.addEventListener('change', () => localStorage.setItem(MODEL_STORAGE, select.value));
+    providers.value = defaultProvider(localStorage.getItem(PROVIDER_STORAGE)).id;
+    providers.addEventListener('change', () => {
+      localStorage.setItem(PROVIDER_STORAGE, providers.value);
+      this.showProvider(providerById(providers.value));
+    });
+
+    const models = byId<HTMLSelectElement>('ai-model');
+    models.addEventListener('change', () => {
+      localStorage.setItem(MODEL_STORAGE, models.value);
+      this.showModelHelp();
+    });
 
     const key = byId<HTMLInputElement>('ai-key');
-    key.value = localStorage.getItem(KEY_STORAGE) ?? '';
-    key.addEventListener('change', () => localStorage.setItem(KEY_STORAGE, key.value.trim()));
+    key.addEventListener('change', () => {
+      localStorage.setItem(keyStorageFor(providers.value), key.value.trim());
+    });
+
+    const custom = byId<HTMLInputElement>('ai-model-custom');
+    custom.value = localStorage.getItem(CUSTOM_MODEL_STORAGE) ?? '';
+    custom.addEventListener('change', () => {
+      localStorage.setItem(CUSTOM_MODEL_STORAGE, custom.value.trim());
+    });
+
+    this.showProvider(providerById(providers.value));
 
     const files = byId<HTMLInputElement>('ai-images');
     files.addEventListener('change', () => void this.loadImages(files.files));
@@ -486,6 +518,54 @@ export class App {
       byId<HTMLTextAreaElement>('ai-prompt').focus();
     });
     byId('ai-go').addEventListener('click', () => void this.runAi());
+  }
+
+  /**
+   * Frueher lag genau ein Schluessel unter `fidget-maker.apiKey` - der war
+   * immer der von Anthropic. Der wandert einmalig in das Anbieterfach, damit
+   * er beim Umstieg auf Llama nicht verlorengeht.
+   */
+  private migrateStoredKey(): void {
+    const legacy = localStorage.getItem(KEY_STORAGE);
+    if (!legacy) return;
+    if (!localStorage.getItem(keyStorageFor('anthropic'))) {
+      localStorage.setItem(keyStorageFor('anthropic'), legacy);
+    }
+    localStorage.removeItem(KEY_STORAGE);
+  }
+
+  /** Modellliste, Schluesselfeld und Hinweise auf den Anbieter umstellen. */
+  private showProvider(provider: AiProvider): void {
+    const models = byId<HTMLSelectElement>('ai-model');
+    models.replaceChildren();
+    for (const entry of provider.models) {
+      const option = el('option');
+      option.value = entry.id;
+      option.textContent = entry.label;
+      models.append(option);
+    }
+
+    // Ein gespeichertes Modell gilt nur, wenn es zu diesem Anbieter gehoert.
+    const stored = localStorage.getItem(MODEL_STORAGE) ?? '';
+    models.value = provider.models.some((m) => m.id === stored) ? stored : provider.models[0].id;
+    this.showModelHelp();
+
+    byId('ai-provider-note').textContent = provider.note;
+
+    const key = byId<HTMLInputElement>('ai-key');
+    key.placeholder = provider.keyPrefix;
+    key.value = localStorage.getItem(keyStorageFor(provider.id)) ?? '';
+
+    const link = byId<HTMLAnchorElement>('ai-key-link');
+    link.href = provider.keyUrl;
+    link.textContent = provider.keyUrl.replace(/^https:\/\//, '');
+  }
+
+  private showModelHelp(): void {
+    const provider = providerById(byId<HTMLSelectElement>('ai-provider').value);
+    const chosen = byId<HTMLSelectElement>('ai-model').value;
+    const entry = provider.models.find((m) => m.id === chosen);
+    byId('ai-model-help').textContent = entry?.help ?? '';
   }
 
   private async loadImages(list: FileList | null): Promise<void> {
@@ -523,15 +603,24 @@ export class App {
     const button = byId<HTMLButtonElement>('ai-go');
     const prompt = byId<HTMLTextAreaElement>('ai-prompt').value;
     const apiKey = byId<HTMLInputElement>('ai-key').value.trim();
-    const aiModel = byId<HTMLSelectElement>('ai-model').value;
+    const provider = providerById(byId<HTMLSelectElement>('ai-provider').value);
+    // Eine eigene Kennung schlaegt die Auswahl - sonst kaeme man an ein
+    // umbenanntes Modell nicht mehr heran.
+    const custom = byId<HTMLInputElement>('ai-model-custom').value.trim();
+    const aiModel = custom || byId<HTMLSelectElement>('ai-model').value;
 
     button.disabled = true;
-    this.setAiStatus(apiKey ? 'Die KI entwirft ...' : 'Ohne Schluessel: Stichwortsuche laeuft ...');
+    this.setAiStatus(
+      apiKey
+        ? `${provider.label} entwirft ...`
+        : 'Ohne Schluessel: Stichwortsuche laeuft ...',
+    );
     try {
       const design = await designFidget({
         prompt,
         images: this.images,
         apiKey: apiKey || undefined,
+        provider: provider.id,
         model: aiModel,
       });
 
