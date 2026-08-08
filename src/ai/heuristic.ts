@@ -290,9 +290,11 @@ export function heuristicDesign(prompt: string): DesignResult {
     }
   }
 
+  const bereinigt = normalizeParams(model, params);
   return {
     modelId: model.id,
-    params: normalizeParams(model, params),
+    params: bereinigt,
+    changed: Object.keys(model.defaults).filter((k) => bereinigt[k] !== model.defaults[k]).length,
     name: `${model.name} nach deiner Beschreibung`,
     reason:
       notes.length > 0

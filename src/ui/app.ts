@@ -683,8 +683,21 @@ export class App {
       this.renderControlPanel();
       await this.build();
 
-      this.setAiStatus(`${design.name}: ${design.reason}`, 'ok');
-      byId('ai').hidden = true;
+      // Wenn nichts von der Vorgabe abweicht, hat die KI faktisch nichts
+      // getan. Das offen sagen, statt den Nutzer raten zu lassen, warum das
+      // Ergebnis wie die Voreinstellung aussieht.
+      if (design.source === 'ki' && design.changed === 0) {
+        this.setAiStatus(
+          `${provider.label} hat keine Werte gesetzt - das ist die unveraenderte Voreinstellung. Ein groesseres Modell (Llama 3.3 70B statt 8B) hilft hier am meisten.`,
+          'error',
+        );
+      } else {
+        this.setAiStatus(
+          `${design.name}: ${design.reason} (${design.changed} Werte gesetzt)`,
+          'ok',
+        );
+        byId('ai').hidden = true;
+      }
       this.setStatus(`${design.name} - ${design.source === 'ki' ? 'von der KI entworfen' : 'ohne KI entworfen'}`);
     } catch (error) {
       this.setAiStatus(error instanceof Error ? error.message : 'Der Entwurf ist fehlgeschlagen.', 'error');

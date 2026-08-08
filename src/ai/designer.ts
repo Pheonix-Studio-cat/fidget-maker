@@ -20,7 +20,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { MODELS, modelById } from '../models/index.ts';
-import { normalizeParams, type Params } from '../models/types.ts';
+import { normalizeParams, type FidgetModel, type Params } from '../models/types.ts';
 import { heuristicDesign } from './heuristic.ts';
 import { buildDesignSchema, describeCatalog } from './schema.ts';
 import { providerById, type AiProvider } from './providers.ts';
@@ -40,6 +40,12 @@ export interface DesignResult {
   name: string;
   reason: string;
   source: 'ki' | 'heuristik';
+  /**
+   * Wie viele Parameter von der Vorgabe abweichen. Bleibt das 0, hat die KI
+   * nichts eingestellt und das Ergebnis ist schlicht die Voreinstellung -
+   * das soll die Oberflaeche sagen koennen, statt es zu verschweigen.
+   */
+  changed: number;
 }
 
 export interface DesignImage {
@@ -74,28 +80,106 @@ Halte dich an diese Punkte:
   was sich mit den vorhandenen Parametern ausdruecken laesst.
 - Wenn der Wunsch mehrdeutig ist, entscheide dich fuer die Auslegung, die
   zuverlaessig druckbar ist, und erklaere die Wahl in einem Satz.
-- Antworte auf Deutsch, ohne Umlaute in Parameterwerten.
+- Antworte auf Deutsch, ohne Umlaute in Parameterwerten.`;
+
+/**
+ * Systemprompt fuer Anthropic. Dort bindet das Schema die Antwort, deshalb
+ * darf hier der vollstaendige Katalog stehen - Claude kommt damit zurecht.
+ */
+const SYSTEM_PROMPT = `${RULES}
 
 Verfuegbare Fidgets und ihre Parameter:
 
 ${describeCatalog(MODELS)}`;
 
-/** Systemprompt fuer Anthropic - dort haelt das Schema die Antwort in Form. */
-const SYSTEM_PROMPT = RULES;
-
-/**
- * Systemprompt fuer die OpenAI-kompatiblen Anbieter. Dort gibt es keine
- * garantierte Schema-Bindung, also steht das Schema im Text und die Regel,
- * ausschliesslich JSON zu liefern, direkt daneben.
- */
-const OPENAI_SYSTEM_PROMPT = `${RULES}
-
-Antworte ausschliesslich mit einem JSON-Objekt nach diesem Schema. Kein
-Fliesstext davor oder danach, keine Code-Umrandung:
-
-${JSON.stringify(buildDesignSchema(MODELS), null, 1)}`;
+/** Nur fuer Tests: die Auswahlfrage des ersten Schritts. */
+export const choosePrompt = () => CHOOSE_PROMPT;
 
 const FALLBACK_PROMPT = 'Ueberrasche mich mit einem schoenen Fidget.';
+
+/**
+ * Kurzuebersicht fuer die Auswahl: eine Zeile pro Fidget. Mehr braucht es
+ * fuer die Frage "welches davon?" nicht, und weniger Text heisst bei
+ * kleinen Modellen deutlich zuverlaessigere Antworten.
+ */
+const OVERVIEW = MODELS.map((m) => `${m.id}: ${m.name} - ${m.tagline}`).join('\n');
+
+const CHOOSE_PROMPT = `Du hilfst beim Auswaehlen eines 3D-druckbaren Fidgets.
+
+Diese Fidgets gibt es:
+${OVERVIEW}
+
+Antworte mit genau einer Kennung aus der linken Spalte - ein einziges Wort,
+keine Erklaerung, keine Satzzeichen. Passt nichts eindeutig, waehle das, was
+dem Wunsch am naechsten kommt.`;
+
+/**
+ * Systemprompt fuer den zweiten Schritt: nur noch die Parameter des bereits
+ * gewaehlten Fidgets, dazu ein ausgefuelltes Beispiel.
+ *
+ * Frueher standen hier alle fuenf Fidgets und obendrein das komplette
+ * JSON-Schema - zusammen rund 5500 Token. Kleine offene Modelle gehen darin
+ * unter und liefern dann leere oder erfundene Parameter. Jetzt sind es je
+ * nach Fidget ein paar hundert Token, und das Beispiel zeigt die Form der
+ * Antwort, statt sie zu beschreiben.
+ */
+export function paramPrompt(model: FidgetModel): string {
+  const beispiel = exampleFor(model);
+  return `${RULES}
+
+Das Fidget steht schon fest: ${model.id} (${model.name}).
+Stelle nur noch seine Parameter ein.
+
+${describeCatalog([model])}
+
+Antworte ausschliesslich mit einem JSON-Objekt in genau dieser Form - kein
+Fliesstext davor oder danach, keine Code-Umrandung:
+
+{"params": ${JSON.stringify(beispiel.params)}, "name": "${beispiel.name}", "reason": "${beispiel.reason}"}
+
+"params" enthaelt nur die Parameter, die vom Vorgabewert abweichen sollen.
+"name" ist ein kurzer Name fuer das Ergebnis, "reason" ein Satz zur Begruendung.`;
+}
+
+/**
+ * Ein ausgefuelltes Beispiel pro Fidget. Fuer kleine Modelle ist ein Beispiel
+ * das wirksamste Mittel ueberhaupt - es zeigt Form, Umfang und Tonfall der
+ * Antwort in einem Zug.
+ */
+export function exampleFor(model: FidgetModel): { params: Params; name: string; reason: string } {
+  switch (model.id) {
+    case 'popit':
+      return {
+        params: { shape: 'herz', width: 80, height: 75, domeSize: 'd6', keyring: true },
+        name: 'Herz-Popit',
+        reason: 'Herzform in Anhaengergroesse, kleine Kuppeln fuer viele Blasen.',
+      };
+    case 'clicker':
+      return {
+        params: { cols: 3, rows: 1, keycaps: true },
+        name: 'Dreier-Clicker',
+        reason: 'Drei Tasten nebeneinander, mit Tastenkappen zum Draufdruecken.',
+      };
+    case 'stressball':
+      return {
+        params: { diameter: 70, material: 'tpu85', surface: 'noppen' },
+        name: 'Weicher Noppenball',
+        reason: 'Weiches TPU und Noppen fuer griffiges, nachgiebiges Kneten.',
+      };
+    case 'slider':
+      return {
+        params: { length: 90, magnetMode: 'anziehen', magnet: 'm6x3' },
+        name: 'Taschen-Slider',
+        reason: 'Kurze Schiene, der Wagen rastet an beiden Enden magnetisch ein.',
+      };
+    default:
+      return {
+        params: { arms: 4, armLength: 30, weightMode: 'lager' },
+        name: 'Vierarm-Spinner',
+        reason: 'Vier Arme mit Lagern aussen, laeuft dadurch lange nach.',
+      };
+  }
+}
 
 /**
  * Entwirft ein Fidget. Ohne API-Schluessel - oder wenn der Aufruf scheitert -
@@ -115,22 +199,78 @@ export async function designFidget(req: DesignRequest): Promise<DesignResult> {
 
 // --- OpenAI-Protokoll: OpenRouter, Groq ----------------------------------
 
+/**
+ * Zwei kleine Fragen statt einer grossen.
+ *
+ * Erst "welches Fidget?" - dafuer genuegen fuenf Zeilen Uebersicht. Dann
+ * "welche Parameter?" - dafuer zaehlen nur noch die des gewaehlten Fidgets.
+ * Jeder Schritt sieht damit einen Bruchteil des frueheren Prompts, und beide
+ * Fragen sind fuer sich genommen einfach. Auf einem 8B-Modell ist das der
+ * Unterschied zwischen brauchbar und unbrauchbar.
+ */
 async function designWithOpenAi(
   req: DesignRequest,
   provider: AiProvider,
   model: string,
 ): Promise<DesignResult> {
-  const parts: unknown[] = [];
+  const wunsch = req.prompt.trim() || FALLBACK_PROMPT;
+  const bilder: unknown[] = [];
   if (provider.vision) {
     for (const image of req.images ?? []) {
-      parts.push({
+      bilder.push({
         type: 'image_url',
         image_url: { url: `data:${image.mediaType};base64,${image.data}` },
       });
     }
   }
-  parts.push({ type: 'text', text: req.prompt.trim() || FALLBACK_PROMPT });
+  const frage = (text: string) => [...bilder, { type: 'text', text }];
 
+  // Schritt 1: das Fidget waehlen.
+  const gewaehlt = await chat(req, provider, model, {
+    system: CHOOSE_PROMPT,
+    content: frage(wunsch),
+    maxTokens: 16,
+  });
+  const fidget = modelById(matchModelId(gewaehlt) ?? heuristicDesign(wunsch).modelId);
+
+  // Schritt 2: die Parameter dieses einen Fidgets einstellen.
+  const antwort = await chat(req, provider, model, {
+    system: paramPrompt(fidget),
+    content: frage(wunsch),
+    maxTokens: 1024,
+    json: true,
+  });
+
+  return parseDesign(antwort, fidget.id);
+}
+
+/**
+ * Sucht in einer freien Antwort die Fidget-Kennung.
+ *
+ * Kleine Modelle antworten trotz klarer Ansage gern mit "Das waere ein
+ * spinner." statt nur "spinner" - deshalb wird gesucht statt verglichen.
+ */
+function matchModelId(text: string): string | null {
+  const lower = text.toLowerCase();
+  for (const m of MODELS) {
+    if (new RegExp(`\\b${m.id}\\b`).test(lower)) return m.id;
+  }
+  return null;
+}
+
+interface ChatOptions {
+  system: string;
+  content: unknown[];
+  maxTokens: number;
+  json?: boolean;
+}
+
+async function chat(
+  req: DesignRequest,
+  provider: AiProvider,
+  model: string,
+  options: ChatOptions,
+): Promise<string> {
   const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     signal: req.signal,
@@ -143,12 +283,14 @@ async function designWithOpenAi(
     },
     body: JSON.stringify({
       model,
-      temperature: 0.4,
-      max_tokens: 2048,
-      response_format: { type: 'json_object' },
+      // Niedrig, damit die Form der Antwort verlaesslich bleibt. Die
+      // Gestaltungsfreiheit steckt in den Parametern, nicht im Wortlaut.
+      temperature: 0.2,
+      max_tokens: options.maxTokens,
+      ...(options.json ? { response_format: { type: 'json_object' } } : {}),
       messages: [
-        { role: 'system', content: OPENAI_SYSTEM_PROMPT },
-        { role: 'user', content: parts },
+        { role: 'system', content: options.system },
+        { role: 'user', content: options.content },
       ],
     }),
   });
@@ -163,8 +305,7 @@ async function designWithOpenAi(
 
   const text = body.choices?.[0]?.message?.content ?? '';
   if (!text.trim()) throw new Error('Die KI hat keine verwertbare Antwort geliefert.');
-
-  return parseDesign(text);
+  return text;
 }
 
 /** Aus dem Fehlerkoerper einen Satz machen, mit dem der Nutzer etwas anfangen kann. */
@@ -266,8 +407,13 @@ function extractJson(text: string): string {
   return body;
 }
 
-/** Prueft die Antwort und bringt sie in die Form, die die Generatoren erwarten. */
-export function parseDesign(text: string): DesignResult {
+/**
+ * Prueft die Antwort und bringt sie in die Form, die die Generatoren erwarten.
+ *
+ * `known` ist das im ersten Schritt gewaehlte Fidget. Ist es gesetzt, gilt
+ * es - der zweite Schritt sollte das Fidget gar nicht mehr aendern.
+ */
+export function parseDesign(text: string, known?: string): DesignResult {
   let raw: unknown;
   try {
     raw = JSON.parse(extractJson(text));
@@ -279,16 +425,18 @@ export function parseDesign(text: string): DesignResult {
   }
 
   const obj = raw as Record<string, unknown>;
-  const modelId = typeof obj.modelId === 'string' ? obj.modelId : '';
-  const known = MODELS.some((m) => m.id === modelId);
-  const model = modelById(known ? modelId : 'popit');
+  const genannt = typeof obj.modelId === 'string' ? obj.modelId : '';
+  const modelId = known ?? genannt;
+  const model = modelById(MODELS.some((m) => m.id === modelId) ? modelId : 'popit');
   const incoming = (typeof obj.params === 'object' && obj.params !== null ? obj.params : {}) as Params;
 
+  const params = normalizeParams(model, incoming);
   return {
     modelId: model.id,
     // normalizeParams begrenzt Werte und wirft alles weg, was nicht zu
     // diesem Modell gehoert - die KI kann damit nichts Ungueltiges bauen.
-    params: normalizeParams(model, incoming),
+    params,
+    changed: Object.keys(model.defaults).filter((k) => params[k] !== model.defaults[k]).length,
     name: typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim() : model.name,
     reason: typeof obj.reason === 'string' ? obj.reason : '',
     source: 'ki',

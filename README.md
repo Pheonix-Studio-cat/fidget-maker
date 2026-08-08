@@ -140,9 +140,22 @@ Auswahlmenue auf. Ein `hidden: false` holt ihn zurueck.
 
 ### Wie es funktioniert
 
-- **Mit API-Schluessel** geht die Anfrage direkt aus dem Browser an den
-  gewaehlten Anbieter. Das Antwortschema wird aus den echten
-  Parameterdefinitionen der Modelle erzeugt und liegt im Systemprompt.
+**Mit API-Schluessel** laeuft der Entwurf in zwei kleinen Schritten statt in
+einer grossen Frage:
+
+1. *Welches Fidget?* - dafuer genuegt eine Uebersicht von fuenf Zeilen
+   (rund 590 Zeichen). Die Antwort ist ein Wort.
+2. *Welche Parameter?* - dafuer zaehlen nur noch die des gewaehlten Fidgets,
+   dazu ein ausgefuelltes Beispiel (2600 bis 3400 Zeichen).
+
+Vorher stand alles in einem Prompt: alle fuenf Fidgets samt komplettem
+JSON-Schema, rund 19500 Zeichen. Grosse Modelle kommen damit zurecht, kleine
+offene gehen darin unter und liefern dann leere oder erfundene Parameter.
+Jeder Schritt fuer sich ist jetzt eine einfache Frage.
+
+Kommt trotzdem nichts Brauchbares zurueck, sagt die Oberflaeche das
+ausdruecklich ("keine Werte gesetzt"), statt kommentarlos die Voreinstellung
+anzuzeigen.
 - **Ohne Schluessel** springt eine Stichwortsuche ein. Sie versteht Form,
   Farbe, Groesse, Zahlwoerter und Sonderwuensche auf Deutsch und Englisch
   und liefert immer ein baubares Ergebnis - sofort und kostenlos.
@@ -185,7 +198,7 @@ Loechern wiederholt (`src/geo/robust.ts`).
 ## Tests
 
 ```bash
-npm test             # 66 Einheitstests: Geometrie, Packing, SDF,
+npm test             # 63 Einheitstests: Geometrie, Packing, SDF,
                      # Modelle, Export, KI
 npm run typecheck
 ```
