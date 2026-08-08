@@ -13,8 +13,10 @@ import { materialById } from '../catalog/parts.ts';
 import {
   defaultProvider,
   designFidget,
+  fetchModels,
   providerById,
   visibleProviders,
+  type AiModel,
   type AiProvider,
   type DesignImage,
 } from '../ai/designer.ts';
@@ -28,7 +30,10 @@ const PROVIDER_STORAGE = 'fidget-maker.aiProvider';
 const MODEL_STORAGE = 'fidget-maker.aiModel';
 const CUSTOM_MODEL_STORAGE = 'fidget-maker.aiModelCustom';
 
+const MODEL_LIST_STORAGE = 'fidget-maker.aiModels';
+
 const keyStorageFor = (provider: string) => `${KEY_STORAGE}.${provider}`;
+const modelListStorageFor = (provider: string) => `${MODEL_LIST_STORAGE}.${provider}`;
 
 function byId<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -502,6 +507,8 @@ export class App {
       localStorage.setItem(keyStorageFor(providers.value), key.value.trim());
     });
 
+    byId('ai-model-reload').addEventListener('click', () => void this.reloadModels());
+
     const custom = byId<HTMLInputElement>('ai-model-custom');
     custom.value = localStorage.getItem(CUSTOM_MODEL_STORAGE) ?? '';
     custom.addEventListener('change', () => {
@@ -534,20 +541,36 @@ export class App {
     localStorage.removeItem(KEY_STORAGE);
   }
 
+  /**
+   * Die zuletzt beim Anbieter abgeholte Modellliste. Sie schlaegt die
+   * eingebaute, denn die veraltet - Anbieter benennen Modelle um.
+   */
+  private storedModels(provider: AiProvider): AiModel[] | null {
+    const raw = localStorage.getItem(modelListStorageFor(provider.id));
+    if (!raw) return null;
+    try {
+      const list = JSON.parse(raw) as AiModel[];
+      return Array.isArray(list) && list.length > 0 ? list : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Modellliste, Schluesselfeld und Hinweise auf den Anbieter umstellen. */
   private showProvider(provider: AiProvider): void {
     const models = byId<HTMLSelectElement>('ai-model');
     models.replaceChildren();
-    for (const entry of provider.models) {
+    for (const entry of this.storedModels(provider) ?? provider.models) {
       const option = el('option');
       option.value = entry.id;
       option.textContent = entry.label;
       models.append(option);
     }
 
-    // Ein gespeichertes Modell gilt nur, wenn es zu diesem Anbieter gehoert.
+    // Ein gespeichertes Modell gilt nur, wenn es in dieser Liste vorkommt.
     const stored = localStorage.getItem(MODEL_STORAGE) ?? '';
-    models.value = provider.models.some((m) => m.id === stored) ? stored : provider.models[0].id;
+    const angeboten = [...models.options].some((o) => o.value === stored);
+    models.value = angeboten ? stored : (models.options[0]?.value ?? '');
     this.showModelHelp();
 
     byId('ai-provider-note').textContent = provider.note;
@@ -564,8 +587,39 @@ export class App {
   private showModelHelp(): void {
     const provider = providerById(byId<HTMLSelectElement>('ai-provider').value);
     const chosen = byId<HTMLSelectElement>('ai-model').value;
-    const entry = provider.models.find((m) => m.id === chosen);
-    byId('ai-model-help').textContent = entry?.help ?? '';
+    const liste = this.storedModels(provider) ?? provider.models;
+    byId('ai-model-help').textContent = liste.find((m) => m.id === chosen)?.help ?? '';
+  }
+
+  /**
+   * Die Modellliste beim Anbieter abholen.
+   *
+   * Fest eingebaute Kennungen veralten - dann laeuft man in ein "kennt das
+   * Modell nicht". Ein Druck auf "Aktualisieren" holt, was es gerade gibt.
+   */
+  private async reloadModels(): Promise<void> {
+    const button = byId<HTMLButtonElement>('ai-model-reload');
+    const provider = providerById(byId<HTMLSelectElement>('ai-provider').value);
+    const key = byId<HTMLInputElement>('ai-key').value.trim();
+
+    button.disabled = true;
+    this.setAiStatus(`Modelle von ${provider.label} werden geholt ...`);
+    try {
+      const models = await fetchModels(provider, key || undefined);
+      localStorage.setItem(modelListStorageFor(provider.id), JSON.stringify(models));
+      this.showProvider(provider);
+      this.setAiStatus(
+        `${models.length} Modelle von ${provider.label} geladen. Das oberste ist meist die beste Wahl.`,
+        'ok',
+      );
+    } catch (error) {
+      this.setAiStatus(
+        `${error instanceof Error ? error.message : String(error)} Die eingebaute Liste bleibt bestehen.`,
+        'error',
+      );
+    } finally {
+      button.disabled = false;
+    }
   }
 
   private async loadImages(list: FileList | null): Promise<void> {

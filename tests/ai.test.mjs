@@ -7,6 +7,7 @@ import {
   AI_PROVIDERS,
   defaultProvider,
   designFidget,
+  fetchModels,
   parseDesign,
   providerById,
   visibleProviders,
@@ -228,7 +229,7 @@ test('Fehler des Anbieters kommen als lesbarer Satz an', async () => {
   const faelle = [
     [401, /Schluessel abgelehnt/],
     [402, /Guthaben/],
-    [404, /kennt das Modell nicht/],
+    [404, /kennt dieses Modell nicht/],
     [429, /bremst/],
   ];
 
@@ -245,6 +246,83 @@ test('Fehler des Anbieters kommen als lesbarer Satz an', async () => {
   } finally {
     globalThis.fetch = echt;
   }
+});
+
+/**
+ * Fest eingebaute Modellkennungen veralten - genau daran ist der erste
+ * echte Versuch gescheitert. Deshalb holt die App die Liste beim Anbieter.
+ */
+test('Die Modellliste kommt vom Anbieter, gratis und gross zuerst', async () => {
+  const echt = globalThis.fetch;
+  let gesehen = null;
+  globalThis.fetch = async (url, init) => {
+    gesehen = { url, init };
+    return new Response(
+      JSON.stringify({
+        data: [
+          { id: 'openai/gpt-4o', name: 'GPT-4o' },
+          { id: 'meta-llama/llama-3.1-8b-instruct:free', name: 'Llama 3.1 8B' },
+          { id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B' },
+          { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B' },
+        ],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  };
+
+  let modelle;
+  try {
+    modelle = await fetchModels(providerById('openrouter'), 'sk-or-v1-test');
+  } finally {
+    globalThis.fetch = echt;
+  }
+
+  assert.equal(gesehen.url, 'https://openrouter.ai/api/v1/models');
+  assert.equal(gesehen.init.headers.authorization, 'Bearer sk-or-v1-test');
+
+  // Fremde Anbieter fliegen raus, sonst waere die Auswahl unbrauchbar.
+  assert.ok(!modelle.some((m) => m.id.startsWith('openai/')), 'nur Llama gehoert in die Liste');
+
+  // Gratis vor bezahlt, gross vor klein.
+  assert.deepEqual(
+    modelle.map((m) => m.id),
+    [
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'meta-llama/llama-3.1-8b-instruct:free',
+      'meta-llama/llama-3.3-70b-instruct',
+    ],
+  );
+  assert.match(modelle[0].label, /\(gratis\)$/);
+  assert.match(modelle[0].help, /meta-llama\/llama-3\.3-70b-instruct:free/, 'die Kennung muss sichtbar sein');
+});
+
+test('Ohne Schluessel fragt OpenRouter trotzdem, Groq meldet sich', async () => {
+  const echt = globalThis.fetch;
+  try {
+    // Ohne Schluessel darf kein leerer Authorization-Kopf mitgehen.
+    let kopf = 'noch nicht gesehen';
+    globalThis.fetch = async (_url, init) => {
+      kopf = init.headers.authorization;
+      return new Response(JSON.stringify({ data: [{ id: 'llama-3.3-70b-versatile' }] }), {
+        status: 200,
+      });
+    };
+    await fetchModels(providerById('openrouter'));
+    assert.equal(kopf, undefined);
+
+    // 401 wird zu einem Satz, der sagt, was fehlt.
+    globalThis.fetch = async () => new Response('nope', { status: 401 });
+    await assert.rejects(fetchModels(providerById('groq')), /gueltigen Schluessel/);
+
+    globalThis.fetch = async () => new Response('nope', { status: 500 });
+    await assert.rejects(fetchModels(providerById('groq')), /Fehler 500/);
+  } finally {
+    globalThis.fetch = echt;
+  }
+});
+
+test('Ein Anbieter ohne Modellliste sagt das, statt zu raten', async () => {
+  await assert.rejects(fetchModels(AI_PROVIDERS.find((p) => p.id === 'anthropic')), /keine Modellliste/);
 });
 
 test('Ohne Schluessel wird nichts verschickt', async () => {

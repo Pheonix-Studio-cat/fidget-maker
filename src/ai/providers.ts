@@ -127,6 +127,85 @@ export function visibleProviders(): AiProvider[] {
   return AI_PROVIDERS.filter((p) => !p.hidden);
 }
 
+/**
+ * Holt die Modellliste beim Anbieter.
+ *
+ * Die eingebaute Liste oben veraltet zwangslaeufig - OpenRouter und Groq
+ * benennen Modelle um oder nehmen sie heraus, und dann laeuft man in ein
+ * "kennt das Modell nicht". Der Anbieter weiss selbst am besten, was es
+ * gerade gibt, also fragen wir ihn.
+ *
+ * Der Endpunkt `/models` gehoert zum OpenAI-Protokoll. OpenRouter beantwortet
+ * ihn ohne Schluessel, Groq braucht einen - deshalb wird er mitgeschickt,
+ * wenn vorhanden.
+ */
+export async function fetchModels(
+  provider: AiProvider,
+  apiKey?: string,
+  signal?: AbortSignal,
+): Promise<AiModel[]> {
+  if (provider.api !== 'openai' || !provider.baseUrl) {
+    throw new Error(`${provider.label} bietet keine Modellliste an.`);
+  }
+
+  const response = await fetch(`${provider.baseUrl}/models`, {
+    signal,
+    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 401
+        ? `${provider.label} braucht fuer die Modellliste einen gueltigen Schluessel.`
+        : `${provider.label} liefert die Modellliste nicht (Fehler ${response.status}).`,
+    );
+  }
+
+  const body = (await response.json()) as { data?: { id?: unknown; name?: unknown }[] };
+  const all = (body.data ?? [])
+    .map((entry) => ({
+      id: typeof entry.id === 'string' ? entry.id : '',
+      name: typeof entry.name === 'string' ? entry.name : '',
+    }))
+    .filter((entry) => entry.id);
+
+  // Nur Llama - alles andere waere in diesem Auswahlfeld nur Rauschen.
+  const llama = all.filter((entry) => /llama/i.test(entry.id));
+  const chosen = llama.length > 0 ? llama : all;
+
+  return chosen.map((entry) => sortable(entry)).sort(byRank).map(({ model }) => model);
+}
+
+interface Ranked {
+  model: AiModel;
+  rank: number;
+  id: string;
+}
+
+/**
+ * Reihenfolge: gratis vor bezahlt, gross vor klein. So steht oben, was man
+ * am ehesten will, statt der alphabetischen Zufallsordnung des Anbieters.
+ */
+function sortable(entry: { id: string; name: string }): Ranked {
+  const free = entry.id.endsWith(':free');
+  const billions = Number(entry.id.match(/(\d+)b\b/i)?.[1] ?? 0);
+
+  const label = entry.name || entry.id;
+  const groesse = billions >= 70 ? 'gross' : billions >= 20 ? 'mittel' : 'klein';
+  return {
+    model: {
+      id: entry.id,
+      label: free ? `${label} (gratis)` : label,
+      help: `${free ? 'Kostenlos, dafuer im Durchsatz begrenzt' : 'Kostet pro Anfrage'} - ${groesse}es Modell. Kennung: ${entry.id}`,
+    },
+    rank: (free ? 0 : 1000) - billions,
+    id: entry.id,
+  };
+}
+
+function byRank(a: Ranked, b: Ranked): number {
+  return a.rank - b.rank || a.id.localeCompare(b.id);
+}
+
 export function providerById(id: string): AiProvider {
   return AI_PROVIDERS.find((p) => p.id === id) ?? visibleProviders()[0] ?? AI_PROVIDERS[0];
 }

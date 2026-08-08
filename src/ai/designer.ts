@@ -25,7 +25,13 @@ import { heuristicDesign } from './heuristic.ts';
 import { buildDesignSchema, describeCatalog } from './schema.ts';
 import { providerById, type AiProvider } from './providers.ts';
 
-export { AI_PROVIDERS, defaultProvider, providerById, visibleProviders } from './providers.ts';
+export {
+  AI_PROVIDERS,
+  defaultProvider,
+  fetchModels,
+  providerById,
+  visibleProviders,
+} from './providers.ts';
 export type { AiModel, AiProvider } from './providers.ts';
 
 export interface DesignResult {
@@ -178,7 +184,7 @@ async function describeHttpError(response: Response, provider: AiProvider): Prom
     return `${provider.label} meldet zu wenig Guthaben. Waehle ein Modell mit "(gratis)" oder lade auf.`;
   }
   if (response.status === 404) {
-    return `${provider.label} kennt das Modell nicht. Vermutlich wurde die Modellkennung umbenannt - waehle ein anderes Modell oder trage eine eigene Kennung ein.`;
+    return `${provider.label} kennt dieses Modell nicht - die Kennung wurde vermutlich umbenannt. Druecke "Aktualisieren" neben der Modellauswahl, dann holt die App die aktuelle Liste beim Anbieter.`;
   }
   if (response.status === 429) {
     return `${provider.label} bremst gerade (zu viele Anfragen). Warte kurz oder nimm ein bezahltes Modell.`;
