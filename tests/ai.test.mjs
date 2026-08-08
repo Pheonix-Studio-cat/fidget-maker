@@ -2,12 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MODELS, modelById } from '../src/models/index.ts';
+import { normalizeParams } from '../src/models/types.ts';
 import { buildDesignSchema, describeCatalog, findSchemaConflicts } from '../src/ai/schema.ts';
 import {
   AI_PROVIDERS,
   defaultProvider,
+  choosePrompt,
   designFidget,
+  exampleFor,
   fetchModels,
+  paramPrompt,
   parseDesign,
   providerById,
   visibleProviders,
@@ -141,61 +145,115 @@ test('Jedes Ergebnis der KI laesst sich sofort bauen', (t) => {
  * Anfrage schon: Adresse, Kopfzeilen und Nachrichtenform sind das, was beim
  * Anbieterwechsel kaputtgeht.
  */
-test('Der Aufruf an Llama hat die richtige Form', async () => {
+/**
+ * Die Beispiele im Prompt sind das, woran sich kleine Modelle orientieren.
+ * Ein erfundener Parameter oder Wert waere dort besonders schaedlich - er
+ * wuerde zuverlaessig nachgeahmt und dann stillschweigend weggeworfen.
+ */
+test('Die Beispiele im Prompt bestehen aus echten Parametern', (t) => {
+  for (const model of MODELS) {
+    const beispiel = exampleFor(model);
+    const bereinigt = normalizeParams(model, { ...model.defaults, ...beispiel.params });
+
+    for (const [key, wert] of Object.entries(beispiel.params)) {
+      const def = model.params.find((p) => p.key === key);
+      assert.ok(def, `${model.id}: Parameter "${key}" gibt es nicht`);
+      assert.deepEqual(
+        bereinigt[key],
+        wert,
+        `${model.id}.${key}: der Beispielwert ${JSON.stringify(wert)} ueberlebt normalizeParams nicht`,
+      );
+    }
+
+    // Und das Beispiel muss sich auch bauen lassen.
+    const gebaut = model.build(bereinigt);
+    t.diagnostic(`${model.id}: ${beispiel.name} -> ${gebaut.parts.length} Teile`);
+    assert.ok(gebaut.parts.length > 0);
+  }
+});
+
+test('Die Prompts sind klein genug fuer kleine Modelle', (t) => {
+  const auswahl = choosePrompt();
+  t.diagnostic(`Auswahl: ${auswahl.length} Zeichen`);
+  assert.ok(auswahl.length < 900, `die Auswahlfrage ist mit ${auswahl.length} Zeichen zu lang`);
+  for (const model of MODELS) {
+    assert.match(auswahl, new RegExp(`\\b${model.id}\\b`), `${model.id} fehlt in der Auswahl`);
+  }
+
+  for (const model of MODELS) {
+    const prompt = paramPrompt(model);
+    t.diagnostic(`${model.id}: ${prompt.length} Zeichen`);
+    // Frueher waren es rund 19500 Zeichen fuer alle Modelle zusammen.
+    assert.ok(prompt.length < 6000, `${model.id}: ${prompt.length} Zeichen sind zu viel`);
+    // Nur die Parameter dieses einen Fidgets duerfen darin stehen.
+    for (const other of MODELS) {
+      if (other.id === model.id) continue;
+      assert.ok(!prompt.includes(`## ${other.id} -`), `${model.id}: ${other.id} steht mit drin`);
+    }
+  }
+});
+
+test('Der Entwurf laeuft in zwei kleinen Schritten', async () => {
   const echt = globalThis.fetch;
-  let gesehen = null;
+  const rufe = [];
   globalThis.fetch = async (url, init) => {
-    gesehen = { url, init };
-    return new Response(
-      JSON.stringify({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                modelId: 'stressball',
-                params: { diameter: 70 },
-                name: 'Knautschball',
-                reason: 'weich',
-              }),
-            },
-          },
-        ],
-      }),
-      { status: 200, headers: { 'content-type': 'application/json' } },
-    );
+    const body = JSON.parse(init.body);
+    rufe.push({ url, init, body });
+    // Schritt 1 fragt nach dem Fidget, Schritt 2 nach den Parametern.
+    const antwort =
+      rufe.length === 1
+        ? 'Das waere am ehesten ein stressball.'
+        : JSON.stringify({ params: { diameter: 70 }, name: 'Knautschball', reason: 'weich' });
+    return new Response(JSON.stringify({ choices: [{ message: { content: antwort } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
   };
 
+  let design;
   try {
-    const design = await designFidget({
+    design = await designFidget({
       prompt: 'ein weicher Ball',
       apiKey: 'sk-or-v1-testschluessel',
       provider: 'openrouter',
       images: [{ data: 'AAAA', mediaType: 'image/png' }],
     });
-    assert.equal(design.modelId, 'stressball');
-    assert.equal(design.params.diameter, 70);
-    assert.equal(design.source, 'ki');
   } finally {
     globalThis.fetch = echt;
   }
 
-  assert.equal(gesehen.url, 'https://openrouter.ai/api/v1/chat/completions');
-  assert.equal(gesehen.init.method, 'POST');
-  assert.equal(gesehen.init.headers.authorization, 'Bearer sk-or-v1-testschluessel');
+  assert.equal(rufe.length, 2, 'es sind genau zwei Anfragen');
+  assert.equal(design.modelId, 'stressball');
+  assert.equal(design.params.diameter, 70);
+  assert.equal(design.name, 'Knautschball');
+  assert.equal(design.source, 'ki');
 
-  const body = JSON.parse(gesehen.init.body);
-  assert.equal(body.model, 'meta-llama/llama-3.3-70b-instruct:free');
-  assert.equal(body.response_format.type, 'json_object');
-  assert.equal(body.messages[0].role, 'system');
-  assert.match(body.messages[0].content, /Pop-It/, 'der Katalog muss im Systemprompt stehen');
-  assert.match(body.messages[0].content, /json/i, 'das Schema muss im Systemprompt stehen');
+  for (const ruf of rufe) {
+    assert.equal(ruf.url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.equal(ruf.init.method, 'POST');
+    assert.equal(ruf.init.headers.authorization, 'Bearer sk-or-v1-testschluessel');
+    assert.equal(ruf.body.model, 'meta-llama/llama-3.3-70b-instruct:free');
+    // Beide Schritte sehen den Wunsch und die Bilder.
+    const user = ruf.body.messages[1].content;
+    assert.equal(user.at(-1).text, 'ein weicher Ball');
+    assert.ok(
+      user.some((p) => p.type === 'image_url' && p.image_url.url.startsWith('data:image/png;base64,')),
+      'Bilder muessen als data-URL mitgehen',
+    );
+  }
 
-  const user = body.messages[1].content;
-  assert.equal(user.at(-1).text, 'ein weicher Ball');
-  assert.ok(
-    user.some((p) => p.type === 'image_url' && p.image_url.url.startsWith('data:image/png;base64,')),
-    'Bilder muessen als data-URL mitgehen',
-  );
+  // Schritt 1: kurze Auswahlfrage, knappe Antwort, kein JSON-Zwang.
+  const auswahl = rufe[0].body;
+  assert.ok(auswahl.messages[0].content.length < 900, 'die Auswahlfrage muss kurz sein');
+  assert.ok(auswahl.max_tokens <= 32, 'ein Wort braucht keine 2000 Token');
+  assert.equal(auswahl.response_format, undefined);
+
+  // Schritt 2: nur die Parameter des gewaehlten Fidgets, mit Beispiel.
+  const params = rufe[1].body;
+  assert.equal(params.response_format.type, 'json_object');
+  assert.match(params.messages[0].content, /## stressball/, 'der Stressball muss drinstehen');
+  assert.ok(!params.messages[0].content.includes('## spinner -'), 'fremde Fidgets gehoeren nicht hinein');
+  assert.match(params.messages[0].content, /"params":/, 'ein Beispiel muss die Form zeigen');
 });
 
 test('Groq bekommt keine Bilder geschickt', async () => {
