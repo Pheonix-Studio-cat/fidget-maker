@@ -118,9 +118,21 @@ oder fast nichts. Zur Wahl stehen:
 | **Groq** | Llama 3.3 70B, Llama 3.1 8B | Kostenloses Kontingent, sehr schnell (meist unter zwei Sekunden). Wertet keine Bilder aus. | <https://console.groq.com/keys> |
 
 Beide sprechen dasselbe Protokoll, deshalb steckt der Unterschied nur in
-`src/ai/providers.ts`. Willst du ein Modell, das dort nicht steht, traegst du
-seine Kennung im Feld **Eigene Modellkennung** ein - das ueberschreibt die
-Auswahl.
+`src/ai/providers.ts`.
+
+**Modellkennungen veralten.** OpenRouter und Groq benennen Modelle um oder
+nehmen sie heraus; eine fest eingebaute Liste laeuft dann in ein "kennt
+dieses Modell nicht". Deshalb steht neben der Modellauswahl ein Knopf
+**Aktualisieren**: er holt die Liste beim Anbieter (`GET /models`), behaelt
+die Llama-Eintraege, sortiert gratis vor bezahlt und gross vor klein und
+merkt sie sich. Die eingebaute Liste ist nur noch der Startwert.
+
+Wer ein ganz bestimmtes Modell will, traegt seine Kennung im Feld **Eigene
+Modellkennung** ein - das ueberschreibt die Auswahl.
+
+Bilder als Vorlage versteht nur ein Modell mit Bilderkennung (bei OpenRouter
+die Vision-Fassungen). Groq wertet hier gar keine Bilder aus, dort werden sie
+deshalb erst gar nicht mitgeschickt.
 
 Anthropic (Claude) ist weiterhin implementiert, aber **ausgeblendet**: der
 Eintrag in `providers.ts` traegt `hidden: true` und taucht deshalb nicht im
@@ -173,7 +185,7 @@ Loechern wiederholt (`src/geo/robust.ts`).
 ## Tests
 
 ```bash
-npm test             # 58 Einheitstests: Geometrie, Packing, SDF,
+npm test             # 66 Einheitstests: Geometrie, Packing, SDF,
                      # Modelle, Export, KI
 npm run typecheck
 ```

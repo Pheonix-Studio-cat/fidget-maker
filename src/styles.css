@@ -346,6 +346,22 @@ body {
   font-size: 13px;
 }
 
+/* Auswahlfeld und Knopf nebeneinander, das Feld nimmt den Rest. */
+.field__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.field__row > select {
+  flex: 1;
+  min-width: 0;
+}
+
+.field__row > .btn {
+  flex: 0 0 auto;
+}
+
 .ctl__hint {
   margin: 0;
   font-size: 12px;
