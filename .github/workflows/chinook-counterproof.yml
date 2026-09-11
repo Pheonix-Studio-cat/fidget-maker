@@ -38,7 +38,7 @@ jobs:
       # `npm test` statt der ausgeschriebenen Dateiliste: aendert sich die
       # Liste in `package.json`, prueft die Gegenprobe weiter das Richtige.
       - name: Gegenprobe
-        uses: Pheonix-Studio-cat/Chinook-security/actions/counterproof@fce0653a7dcb16a56f17b7280e10c700bbf25700 # Gegenproben-Bot
+        uses: Pheonix-Studio-cat/Chinook-security/actions/counterproof@a43e038092e08c6f5000d4063dbf005b02821cab # Gegenproben-Bot
         with:
           test-command: "npm test"
           budget: "20"
